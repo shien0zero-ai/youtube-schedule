@@ -11,6 +11,17 @@ const completedVideos = new Map();
 const completedVideoLimit = 512;
 const completedVideoLifetimeMs = 6 * 60 * 60 * 1000;
 
+export function youtubeVideoId(url) {
+  if (!url) return null;
+  let id;
+  if (url.hostname === 'youtu.be') {
+    id = url.pathname.match(/^\/([^/]+)\/?$/)?.[1];
+  } else if (youtubeHosts.has(url.hostname)) {
+    id = url.pathname === '/watch' ? url.searchParams.get('v') : url.pathname.match(/^\/(?:live|shorts|embed)\/([^/]+)\/?$/)?.[1];
+  }
+  return videoIdPattern.test(id ?? '') ? id : null;
+}
+
 function channelNotFound() {
   const error = new Error('YouTubeチャンネルが見つかりませんでした。チャンネルのURLを確認してください。');
   error.code = 'CHANNEL_NOT_FOUND';

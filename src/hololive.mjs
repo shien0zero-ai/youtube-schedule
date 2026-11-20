@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { officialHololiveChannelId, rosterGroups } from './data/hololive-roster.mjs';
-import { getYouTubeChannel, getYouTubeVideos } from './youtube.mjs';
+import { getYouTubeChannel, getYouTubeVideos, youtubeVideoId } from './youtube.mjs';
 
 const officialScheduleUrl = 'https://schedule.hololive.tv/lives/hololive';
 const hour = 60 * 60 * 1000;
@@ -80,17 +80,6 @@ function publicUrl(value) {
   }
 }
 
-function youtubeId(url) {
-  if (!url) return null;
-  let id;
-  if (url.hostname === 'youtu.be') {
-    id = url.pathname.match(/^\/([^/]+)\/?$/)?.[1];
-  } else if (['youtube.com', 'www.youtube.com', 'm.youtube.com'].includes(url.hostname)) {
-    id = url.pathname === '/watch' ? url.searchParams.get('v') : url.pathname.match(/^\/(?:live|shorts|embed)\/([^/]+)\/?$/)?.[1];
-  }
-  return /^[\w-]{11}$/.test(id ?? '') ? id : null;
-}
-
 function identifier(prefix, ...parts) {
   return prefix + createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 24);
 }
@@ -138,7 +127,7 @@ export function parseOfficialSchedule(html, now = Date.now()) {
       date = nearestTokyoDate(Number(month), Number(dayOfMonth), now);
     } else if (tagName === 'a' && hasClass(attrs, 'thumbnail')) {
       const link = publicUrl(attrs.href);
-      const videoId = youtubeId(link);
+      const videoId = youtubeVideoId(link);
       const card = rest().split(/<\/a>/i, 1)[0];
       const name = cardField(card, 'name');
       const key = nameKey(name);

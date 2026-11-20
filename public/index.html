@@ -48,9 +48,12 @@
             <h2 id="schedule-heading">配信一覧</h2>
             <p id="sync-status" class="sync-status" aria-live="polite">配信情報を取得中</p>
           </div>
-          <button class="button secondary" id="refresh" type="button">
-            <span class="refresh-icon" aria-hidden="true">↻</span> 更新
-          </button>
+          <div class="section-actions">
+            <button class="button secondary" id="open-archive" type="button" aria-haspopup="dialog">過去の配信を登録</button>
+            <button class="button secondary" id="refresh" type="button">
+              <span class="refresh-icon" aria-hidden="true">↻</span> 更新
+            </button>
+          </div>
         </div>
 
         <div id="schedule-alerts" class="schedule-alerts" aria-live="polite" hidden></div>
@@ -103,7 +106,7 @@
         <section class="sidebar-card" aria-labelledby="settings-heading">
           <div class="card-icon" aria-hidden="true"><span class="settings-icon">⚙︎</span></div>
           <h2 id="settings-heading">チャンネル設定</h2>
-          <p>過去の配信は原則24時間表示します。公式スケジュールに掲載中の配信は引き続き表示します。</p>
+          <p>取得した過去の配信は自動で残ります。保存をオフにしたチャンネルでは、通常は終了から24時間表示します。</p>
           <div class="sidebar-meta"><span>表示中のチャンネル</span><strong id="channel-count">—</strong></div>
           <button class="button secondary settings-button" type="button" data-open-settings>チャンネルを管理 <span aria-hidden="true">↗</span></button>
         </section>
@@ -119,11 +122,54 @@
     </div>
   </footer>
 
+  <dialog id="archive-dialog" aria-labelledby="archive-heading" aria-describedby="archive-description">
+    <div class="dialog-header">
+      <div>
+        <h2 id="archive-heading">過去の配信を登録</h2>
+        <p id="archive-description">過去の配信を、配信日と公開アーカイブの URL（HTTPS）で登録できます。</p>
+      </div>
+      <form method="dialog"><button class="button icon-button" aria-label="閉じる" type="submit">×</button></form>
+    </div>
+    <div class="dialog-content archive-forms">
+      <section aria-labelledby="archive-single-heading">
+        <h3 id="archive-single-heading">1件ずつ登録</h3>
+        <form class="archive-form" id="archive-form">
+          <fieldset>
+            <label for="archive-date">配信日（JST）</label>
+            <input id="archive-date" name="date" type="date" required autofocus>
+            <label for="archive-channel">チャンネル</label>
+            <select id="archive-channel" name="channel" required>
+              <option value="">チャンネルを選択</option>
+            </select>
+            <label for="archive-title">配信タイトル（任意）</label>
+            <input id="archive-title" name="title" type="text">
+            <label for="archive-url">公開アーカイブの URL</label>
+            <input id="archive-url" name="url" type="url" placeholder="https://www.youtube.com/watch?v=…" required>
+            <button class="button primary" type="submit">配信を登録</button>
+          </fieldset>
+          <p id="archive-message" class="form-message" role="status" hidden></p>
+        </form>
+      </section>
+      <section aria-labelledby="archive-csv-heading">
+        <h3 id="archive-csv-heading">CSVで一括登録</h3>
+        <form class="archive-form" id="archive-csv-form">
+          <fieldset>
+            <p id="archive-csv-format" class="archive-hint">UTF-8 の CSV（256 KiB まで）を使用します。1行目は <code>date,channel,title,url</code>。日付は <code>YYYY-MM-DD</code>、チャンネルは ID または一覧と同じ表示名を入力してください。タイトルは空欄でも登録できます。</p>
+            <label for="archive-csv-file">CSV ファイル</label>
+            <input id="archive-csv-file" name="csv" type="file" accept=".csv,text/csv" aria-describedby="archive-csv-format" required>
+            <button class="button secondary" type="submit">CSVを取り込む</button>
+          </fieldset>
+          <p id="archive-csv-message" class="form-message" role="status" hidden></p>
+        </form>
+      </section>
+    </div>
+  </dialog>
+
   <dialog id="settings-dialog" aria-labelledby="dialog-heading" aria-describedby="dialog-description">
     <div class="dialog-header">
       <div>
         <h2 id="dialog-heading">チャンネル設定</h2>
-        <p id="dialog-description">チャンネルごとに表示を切り替えたり、通常の表示期間を過ぎた配信を残したりできます。</p>
+        <p id="dialog-description">チャンネルごとに表示や配信履歴の保存を切り替えられます。</p>
       </div>
       <form method="dialog"><button class="button icon-button" aria-label="閉じる" type="submit">×</button></form>
     </div>

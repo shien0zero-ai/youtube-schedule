@@ -3,9 +3,11 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseArchiveCsv } from './archives.mjs';
 import { getHololive } from './hololive.mjs';
 import { getYouTubeChannel, normalizeChannelUrl } from './youtube.mjs';
-import { createScheduleService, REFRESH_INTERVAL, ScheduleError } from './schedule.mjs';
+import { createScheduleService, REFRESH_INTERVAL } from './schedule.mjs';
+import { ScheduleError } from './schedule-error.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const defaultDataFile = fileURLToPath(new URL('../.data/schedule.json', import.meta.url));
@@ -24,24 +26,29 @@ function json(response, code, body) {
   response.end(JSON.stringify(body));
 }
 
-async function readJson(request) {
-  if (request.headers['content-type']?.split(';')[0].trim() !== 'application/json') {
-    throw new ScheduleError(415, 'JSON 形式で送信してください。');
-  }
+function contentType(request) {
+  return request.headers['content-type']?.split(';')[0].trim().toLowerCase();
+}
 
+async function readBody(request, limit) {
   const chunks = [];
   let size = 0;
   for await (const chunk of request.iterator({ destroyOnReturn: false })) {
     size += chunk.length;
-    if (size > 8192) {
+    if (size > limit) {
       request.resume();
       throw new ScheduleError(413, 'リクエストが大きすぎます。');
     }
     chunks.push(chunk);
   }
+  return Buffer.concat(chunks);
+}
 
+async function readJson(request, limit = 8192) {
+  if (contentType(request) !== 'application/json') throw new ScheduleError(415, 'JSON 形式で送信してください。');
+  const contents = await readBody(request, limit);
   try {
-    const body = JSON.parse(Buffer.concat(chunks));
+    const body = JSON.parse(contents);
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('Expected object');
     return body;
   } catch {
@@ -82,6 +89,14 @@ export function createApp({
       if (request.method === 'POST' && url.pathname === '/api/channels') {
         const body = await readJson(request);
         return json(response, 201, await schedule.addChannel(body.url));
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/archives') {
+        const limit = 256 * 1024;
+        const entries = contentType(request) === 'text/csv'
+          ? parseArchiveCsv(await readBody(request, limit))
+          : (await readJson(request, limit)).entries;
+        return json(response, 201, schedule.addArchives(entries));
       }
 
       const channel = /^\/api\/channels\/([A-Za-z0-9_-]+)$/.exec(url.pathname);

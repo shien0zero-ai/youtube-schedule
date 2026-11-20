@@ -1,16 +1,11 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { prepareArchives } from './archives.mjs';
+import { ScheduleError } from './schedule-error.mjs';
 
 const DAY = 24 * 60 * 60 * 1000;
 const REFRESH_INTERVAL = 2 * 60 * 1000;
 const FORCED_REFRESH_INTERVAL = 15 * 1000;
-
-export class ScheduleError extends Error {
-  constructor(statusCode, message) {
-    super(message);
-    this.statusCode = statusCode;
-  }
-}
 
 function readState(path) {
   try {
@@ -21,25 +16,49 @@ function readState(path) {
   }
 }
 
+function scheduledTime({ startAt, scheduleDate }) {
+  if (startAt) return Date.parse(startAt);
+  return scheduleDate ? Date.parse(`${scheduleDate}T00:00:00+09:00`) + DAY : NaN;
+}
+
 export function retainStreams(streams, channels, preferences, time, holoduleIds = []) {
-  const channelIds = new Set(channels.map(({ id }) => id));
+  const channelsById = new Map(channels.map((channel) => [channel.id, channel]));
   const listed = new Set(holoduleIds);
-  return streams.filter((stream) => channelIds.has(stream.channelId) && (
-    stream.status !== 'past' ||
-    listed.has(stream.id) ||
-    preferences[stream.channelId] === true ||
-    Date.parse(stream.endAt ?? stream.startAt) > time - DAY
-  ));
+  return streams.filter((stream) => {
+    const channel = channelsById.get(stream.channelId);
+    if (!channel) return false;
+    const preference = preferences[stream.channelId];
+    const keepPast = preference ?? (!channel.holodule || channel.holoduleScope === 'hololive');
+    if (keepPast || stream.manualArchive || listed.has(stream.id)) return true;
+    if (stream.status !== 'past' && !stream.missingFromSource) return true;
+    const end = stream.endAt ? Date.parse(stream.endAt) : scheduledTime(stream);
+    return end > time - DAY;
+  });
+}
+
+function displayStream(stream, time) {
+  if (!stream.missingFromSource) return stream;
+  if (!(scheduledTime(stream) <= time)) return null;
+  const { missingFromSource, ...archive } = stream;
+  return { ...archive, status: 'past', archiveUnconfirmed: true };
 }
 
 function mergeStreams(existing, incoming, time) {
   const merged = new Map(existing.map((stream) => [stream.id, stream]));
   for (const stream of incoming) {
     const previous = merged.get(stream.id);
+    const liveEnded = previous?.status === 'live' && !previous.missingFromSource;
     const endAt = stream.endAt ?? (stream.status === 'past'
-      ? previous?.endAt ?? (previous?.status === 'live' ? new Date(time).toISOString() : null)
+      ? previous?.endAt ?? (liveEnded ? new Date(time).toISOString() : null)
       : null);
-    merged.set(stream.id, { ...stream, endAt });
+    const mergedStream = { ...stream, endAt };
+    if (previous?.manualArchive) {
+      mergedStream.manualArchive = true;
+      if (!stream.startAt && !stream.scheduleDate && previous.scheduleDate) {
+        mergedStream.scheduleDate = previous.scheduleDate;
+      }
+    }
+    merged.set(stream.id, mergedStream);
   }
   return [...merged.values()];
 }
@@ -101,8 +120,12 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
       ...(official?.streams ?? []),
     ];
     const incomingIds = new Set(incoming.map(({ id }) => id));
-    const existing = state.streams.filter((stream) =>
-      stream.status === 'past' || incomingIds.has(stream.id) || !updatedChannels.has(stream.channelId));
+    const previouslyListed = new Set(state.holoduleIds);
+    const existing = state.streams.map((stream) => {
+      if (stream.status === 'past' || stream.missingFromSource || incomingIds.has(stream.id)) return stream;
+      const sourceUpdated = previouslyListed.has(stream.id) ? officialReady : updatedChannels.has(stream.channelId);
+      return sourceUpdated ? { ...stream, missingFromSource: true } : stream;
+    });
     const streams = mergeStreams(existing, incoming, now());
     const updatedAt = officialReady || official?.updatedChannelIds?.length || [...successful].some((id) => activeCustom.has(id))
       ? new Date(now()).toISOString()
@@ -128,24 +151,47 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     return refreshing;
   }
 
-  function snapshot() {
+  function availableChannels() {
     // Older cached Holodule channels can be identified when the scoped feed lists them again.
     const roster = state.roster.filter(({ holodule, holoduleScope }) => !holodule || holoduleScope === 'hololive');
-    const channels = [
+    return [
       ...roster.map((channel) => ({ ...channel, custom: false })),
       ...state.custom.map((channel) => ({ ...channel, custom: true })),
     ].map((channel) => ({
       ...channel,
-      keepPast: state.preferences[channel.id] === true,
+      keepPast: state.preferences[channel.id] !== false,
       hidden: state.hidden.includes(channel.id),
     }));
+  }
+
+  function snapshot() {
+    const channels = availableChannels();
+    const time = now();
+    const streams = retainStreams(state.streams, channels.filter(({ hidden }) => !hidden), state.preferences, time, state.holoduleIds);
 
     return {
       channels,
-      streams: retainStreams(state.streams, channels.filter(({ hidden }) => !hidden), state.preferences, now(), state.holoduleIds),
+      streams: streams.map((stream) => displayStream(stream, time)).filter(Boolean),
       warnings,
       updatedAt: state.updatedAt ?? null,
     };
+  }
+
+  function addArchives(entries) {
+    const time = now();
+    const channels = availableChannels().filter(({ hidden }) => !hidden);
+    const archives = prepareArchives(entries, channels, time);
+    const streams = new Map(state.streams.map((stream) => [stream.id, stream]));
+    let added = 0;
+    for (const archive of archives) {
+      const existing = streams.get(archive.id);
+      if (existing && (existing.manualArchive || existing.channelId !== archive.channelId ||
+        (existing.status !== 'past' && !existing.missingFromSource))) continue;
+      streams.set(archive.id, existing?.status === 'past' ? { ...existing, manualArchive: true } : archive);
+      added++;
+    }
+    if (added) save({ ...state, streams: [...streams.values()], updatedAt: new Date(time).toISOString() });
+    return { added, skipped: archives.length - added };
   }
 
   async function addChannel(rawUrl) {
@@ -182,7 +228,7 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     if (result.avatar) channel.avatar = result.avatar;
     const streams = mergeStreams(state.streams, result.streams.map((stream) => ({ ...stream, channelId: channel.id })), now());
     save({ ...state, custom: [...state.custom, channel], streams, updatedAt: new Date(now()).toISOString() });
-    return { ...channel, custom: true, keepPast: false, hidden: false };
+    return { ...channel, custom: true, keepPast: true, hidden: false };
   }
 
   function setKeepPast(id, keepPast) {
@@ -213,7 +259,7 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     save({ ...state, hidden: state.hidden.filter((hiddenId) => hiddenId !== id) });
   }
 
-  return { refresh, snapshot, addChannel, setKeepPast, removeChannel, restoreChannel };
+  return { refresh, snapshot, addArchives, addChannel, setKeepPast, removeChannel, restoreChannel };
 }
 
-export { REFRESH_INTERVAL };
+export { REFRESH_INTERVAL, ScheduleError };

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -66,9 +66,9 @@ test('schedule API exposes all statuses and persists selected retention and adde
   const request = await startApp(t, options);
 
   const initial = await (await request('/api/schedule')).json();
-  assert.deepEqual(initial.streams.map(({ id }) => id), ['recent', 'on-air', 'next']);
-  assert.deepEqual(initial.streams.map(({ status }) => status), ['past', 'live', 'upcoming']);
-  assert.equal(initial.channels[0].keepPast, false);
+  assert.deepEqual(initial.streams.map(({ id }) => id), ['old', 'recent', 'on-air', 'next']);
+  assert.deepEqual(initial.streams.map(({ status }) => status), ['past', 'past', 'live', 'upcoming']);
+  assert.equal(initial.channels[0].keepPast, true);
 
   assert.equal((await request('/api/channels/official', 'PATCH', { keepPast: true })).status, 200);
   assert.equal((await request('/api/channels', 'POST', { url: 'https://www.youtube.com/@custom' })).status, 201);
@@ -87,6 +87,7 @@ test('schedule API exposes all statuses and persists selected retention and adde
   assert.equal(snapshot.channels.find(({ id }) => id === official.id).hidden, false);
   assert.equal(snapshot.channels.find(({ id }) => id === official.id).keepPast, true);
   assert.equal(snapshot.channels.find(({ id }) => id === custom.channelId).custom, true);
+  assert.equal(snapshot.channels.find(({ id }) => id === custom.channelId).keepPast, true);
   assert.ok(snapshot.streams.some(({ id }) => id === 'recent'));
   assert.ok(snapshot.streams.some(({ id }) => id === 'custom-next'));
   assert.ok(snapshot.streams.some(({ id }) => id === 'old'));
@@ -120,9 +121,11 @@ test('schedule keeps cached data and displays warnings during an upstream failur
   assert.equal(cached.updatedAt, initial.updatedAt);
 });
 
-test('shows older Hololive cards while listed and preserves selected unit history afterwards', async (t) => {
+test('shows listed older Hololive cards and preserves a saved opt-out after listings change', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'youtube-schedule-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'schedule.json');
+  await writeFile(file, JSON.stringify({ roster: [official], custom: [], preferences: { [official.id]: false }, streams: [] }));
   let time = baseTime;
   let feed = 'listed';
   const unit = { id: 'holodule-regloss', name: 'ReGLOSS', group: 'ホロジュール', holodule: true, holoduleScope: 'hololive' };
@@ -137,10 +140,10 @@ test('shows older Hololive cards while listed and preserves selected unit histor
     scheduleAvailable: feed !== 'offline',
   });
 
-  const request = await startApp(t, { file: join(dir, 'schedule.json'), providers: sources, now: () => time });
+  const request = await startApp(t, { file, providers: sources, now: () => time });
   const initial = await (await request('/api/schedule')).json();
   assert.deepEqual(initial.streams.map(({ id }) => id), ['unit-old', 'official-old']);
-  assert.equal((await request(`/api/channels/${unit.id}`, 'PATCH', { keepPast: true })).status, 200);
+  assert.equal(initial.channels.find(({ id }) => id === official.id).keepPast, false);
 
   feed = 'offline';
   time += 20_000;
@@ -152,6 +155,59 @@ test('shows older Hololive cards while listed and preserves selected unit histor
   const after = await (await request('/api/schedule?refresh=1')).json();
   assert.deepEqual(after.streams.map(({ id }) => id), ['unit-old']);
   assert.equal(after.channels.find(({ id }) => id === unit.id).keepPast, true);
+});
+
+test('archives elapsed listings after restart, preserves withdrawn plans, and refreshes restored entries', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'youtube-schedule-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'schedule.json');
+  let time = baseTime;
+  let feed = 'listed';
+  const completed = { ...stream('completed', 'past', -30, -29), channelId: official.id };
+  const live = { ...stream('live', 'live', -1), channelId: official.id };
+  const scheduled = { ...stream('scheduled', 'upcoming', 2), channelId: official.id };
+  const untimed = { ...stream('untimed', 'upcoming', 2), channelId: official.id, startAt: null, scheduleDate: '2026-11-20' };
+  const original = [completed, live, scheduled, untimed];
+  const published = { ...scheduled, status: 'past', endAt: new Date(baseTime + 3 * hour).toISOString() };
+  const sources = providers();
+  sources.getHololive = async () => {
+    const streams = feed === 'listed' ? original : feed === 'published' ? [published] : [];
+    return {
+      channels: [official], streams, scheduleAvailable: feed !== 'offline',
+      updatedChannelIds: [official.id], holoduleIds: streams.map(({ id }) => id),
+    };
+  };
+  const options = { file, providers: sources, now: () => time };
+  const request = await startApp(t, options);
+  const first = await (await request('/api/schedule')).json();
+  assert.deepEqual(first.streams, original);
+
+  feed = 'offline';
+  time += 20_000;
+  const unavailable = await (await request('/api/schedule?refresh=1')).json();
+  assert.deepEqual(unavailable.streams, original);
+
+  feed = 'empty';
+  time += 20_000;
+  const noLongerListed = await (await request('/api/schedule?refresh=1')).json();
+  const unconfirmedLive = { ...live, status: 'past', archiveUnconfirmed: true };
+  assert.deepEqual(noLongerListed.streams, [completed, unconfirmedLive]);
+  assert.deepEqual(JSON.parse(await readFile(file, 'utf8')).streams.find(({ id }) => id === scheduled.id), {
+    ...scheduled, missingFromSource: true,
+  });
+
+  time += 4 * 24 * hour;
+  const restarted = await startApp(t, options);
+  const history = await (await restarted('/api/schedule')).json();
+  assert.deepEqual(history.streams, [completed, unconfirmedLive,
+    { ...scheduled, status: 'past', archiveUnconfirmed: true },
+    { ...untimed, status: 'past', archiveUnconfirmed: true },
+  ]);
+
+  feed = 'published';
+  time += 20_000;
+  const updated = await (await restarted('/api/schedule?refresh=1')).json();
+  assert.deepEqual(updated.streams.find(({ id }) => id === scheduled.id), published);
 });
 
 test('withholds unscoped Holodule cache and restores saved history for verified Hololive channels', async (t) => {

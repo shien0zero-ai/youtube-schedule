@@ -22,7 +22,7 @@ const emptyStates = {
   all: ["表示できる配信はありません", ""],
   live: ["配信中のライブはありません", "「今後の配信」から次のライブをチェックできます。"],
   upcoming: ["今後の配信予定はありません", "配信予定が公開されると、ここに表示されます。"],
-  past: ["表示できる過去の配信はありません", "公式スケジュールに掲載中の過去配信、終了から24時間以内の配信、設定で残した配信が表示されます。"],
+  past: ["表示できる過去の配信はありません", "自動で取得した配信と、手動で登録した配信が表示されます。"],
 };
 
 const timeZone = "Asia/Tokyo";
@@ -45,6 +45,11 @@ const retainedFilter = byId("roster-retained");
 const hiddenFilter = byId("roster-hidden");
 const form = byId("add-channel-form");
 const channelUrl = byId("channel-url");
+const archiveDialog = byId("archive-dialog");
+const archiveForm = byId("archive-form");
+const archiveDate = byId("archive-date");
+const archiveChannel = byId("archive-channel");
+const archiveCsvForm = byId("archive-csv-form");
 const refreshButton = byId("refresh");
 const tabs = [...document.querySelectorAll(".tab")];
 
@@ -170,6 +175,13 @@ function updateChannelControls(channels) {
   setGroups(scheduleGroup, visible);
   setGroups(rosterGroup, channels);
   byId("channel-count").textContent = visible.length.toLocaleString("ja-JP");
+
+  const selected = archiveChannel.value;
+  const placeholder = new Option(visible.length ? "チャンネルを選択" : "登録できるチャンネルがありません", "", true, true);
+  placeholder.disabled = true;
+  visible.sort((left, right) => nameOrder.compare(left.name, right.name));
+  archiveChannel.replaceChildren(placeholder, ...visible.map(({ name, id }) => new Option(name, id)));
+  if (visible.some(({ id }) => id === selected)) archiveChannel.value = selected;
 }
 
 async function loadSchedule({ refresh = false } = {}) {
@@ -261,8 +273,10 @@ function renderStream(stream, channel) {
 
   const body = element("div", "stream-body");
   const meta = element("div", "stream-meta");
-  const badge = element("span", "status-badge", statusLabels[stream.status]);
+  const unconfirmed = stream.status === "past" && stream.archiveUnconfirmed === true;
+  const badge = element("span", "status-badge", unconfirmed ? "アーカイブ未確認" : statusLabels[stream.status]);
   badge.dataset.status = stream.status;
+  if (unconfirmed) badge.dataset.archiveUnconfirmed = "true";
   meta.append(badge);
   const streamDate = validDate(stream.startAt);
   if (streamDate) {
@@ -523,6 +537,60 @@ for (const button of document.querySelectorAll("[data-open-settings]")) {
   });
 }
 
+byId("open-archive").addEventListener("click", () => {
+  const today = jstDateKey(new Date());
+  archiveDate.max = today;
+  archiveDate.value = dateInput.value && dateInput.value <= today ? dateInput.value : today;
+  setMessage(byId("archive-message"));
+  setMessage(byId("archive-csv-message"));
+  archiveDialog.showModal();
+});
+
+async function submitArchives(form, { contentType, body, date }) {
+  const fields = form.querySelector("fieldset");
+  const button = form.querySelector("button[type='submit']");
+  const message = form.querySelector(".form-message");
+  const label = button.textContent;
+  setMessage(message);
+  fields.disabled = true;
+  button.textContent = "登録中…";
+  try {
+    const { added, skipped } = await request("/api/archives", {
+      method: "POST",
+      headers: { "Content-Type": contentType },
+      body,
+    });
+    form.reset();
+    if (date) {
+      archiveDate.value = date;
+      selectDate(date);
+    }
+    setMessage(message, `追加 ${added} 件、スキップ ${skipped} 件。`);
+    await loadSchedule();
+  } catch (error) {
+    setMessage(message, error.message, "error");
+  } finally {
+    fields.disabled = false;
+    button.textContent = label;
+  }
+}
+
+archiveForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const entry = Object.fromEntries(new FormData(archiveForm));
+  submitArchives(archiveForm, {
+    contentType: "application/json",
+    body: JSON.stringify({ entries: [entry] }),
+    date: entry.date,
+  });
+});
+
+archiveCsvForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const file = byId("archive-csv-file").files[0];
+  if (file) submitArchives(archiveCsvForm, { contentType: "text/csv", body: file });
+});
+
 refreshButton.addEventListener("click", () => loadSchedule({ refresh: true }));
 dateInput.addEventListener("change", () => selectDate(dateInput.value));
 for (const button of dateShortcuts) {
@@ -630,7 +698,7 @@ form.addEventListener("submit", async (event) => {
 
 loadSchedule();
 window.setInterval(() => {
-  if (!document.hidden && !state.loading && !dialog.open) loadSchedule();
+  if (!document.hidden && !state.loading && !dialog.open && !archiveDialog.open) loadSchedule();
 }, 90_000);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) renderSchedule();
