@@ -1,0 +1,11 @@
+{
+  "name": "youtube-schedule",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.5" },
+  "scripts": {
+    "start": "node --use-env-proxy src/server.mjs",
+    "test": "node --test"
+  }
+}

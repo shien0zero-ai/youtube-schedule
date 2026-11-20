@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f8f8f2">
+  <meta name="description" content="ホロライブと登録したYouTubeチャンネルのライブ配信スケジュール。">
+  <title>配信日和｜YouTube 配信スケジュール</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="/" aria-label="配信日和 ホーム">
+        <span class="brand-mark" aria-hidden="true"><span></span></span>
+        <span>配信日和</span>
+      </a>
+      <button class="button secondary top-settings" type="button" data-open-settings>
+        <span class="settings-icon" aria-hidden="true">⚙︎</span> チャンネル設定
+      </button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="hero" aria-labelledby="page-title">
+      <div class="hero-content">
+        <p class="hero-label"><span class="hero-signal" aria-hidden="true"></span>YouTube ライブ配信</p>
+        <h1 id="page-title">配信スケジュール</h1>
+        <p class="hero-description">ホロライブと登録したチャンネルの配信をまとめてチェック。</p>
+      </div>
+      <div class="hero-date">
+        <span class="hero-date-label">今日の日付 <span>JST</span></span>
+        <time id="today-date">—</time>
+      </div>
+    </section>
+
+    <div class="dashboard">
+      <section class="schedule" aria-labelledby="schedule-heading">
+        <div class="section-heading">
+          <div>
+            <h2 id="schedule-heading">配信一覧</h2>
+            <p id="sync-status" class="sync-status" aria-live="polite">配信情報を取得中</p>
+          </div>
+          <button class="button secondary" id="refresh" type="button">
+            <span class="refresh-icon" aria-hidden="true">↻</span> 更新
+          </button>
+        </div>
+
+        <div id="schedule-alerts" class="schedule-alerts" aria-live="polite" hidden></div>
+
+        <div class="schedule-controls">
+          <div class="tabs" role="tablist" aria-label="配信の状態">
+            <button class="tab" type="button" id="tab-live" role="tab" aria-selected="true" aria-controls="schedule-panel" data-status="live">
+              <span class="live-dot" aria-hidden="true"></span>配信中<span class="tab-count" id="count-live">—</span>
+            </button>
+            <button class="tab" type="button" id="tab-upcoming" role="tab" aria-selected="false" aria-controls="schedule-panel" tabindex="-1" data-status="upcoming">
+              今後の配信<span class="tab-count" id="count-upcoming">—</span>
+            </button>
+            <button class="tab" type="button" id="tab-past" role="tab" aria-selected="false" aria-controls="schedule-panel" tabindex="-1" data-status="past">
+              過去の配信<span class="tab-count" id="count-past">—</span>
+            </button>
+          </div>
+
+          <div class="filters">
+            <label class="search-field">
+              <span class="search-icon" aria-hidden="true"></span>
+              <span class="sr-only">配信タイトル・チャンネル名で検索</span>
+              <input id="schedule-search" type="search" placeholder="タイトル・チャンネル名">
+            </label>
+            <label class="select-field">
+              <span class="sr-only">所属グループ</span>
+              <select id="schedule-group"><option value="">すべてのグループ</option></select>
+            </label>
+          </div>
+        </div>
+
+        <div id="schedule-panel" class="schedule-panel" role="tabpanel" aria-labelledby="tab-live" tabindex="0" aria-busy="true"></div>
+      </section>
+
+      <aside class="sidebar" aria-label="チャンネル管理">
+        <section class="sidebar-card" aria-labelledby="add-heading">
+          <div class="card-icon card-icon-add" aria-hidden="true">＋</div>
+          <h2 id="add-heading">チャンネルを追加</h2>
+          <p>好きな YouTube チャンネルの配信を一覧に追加できます。</p>
+          <form id="add-channel-form">
+            <label for="channel-url">YouTube チャンネル URL</label>
+            <input id="channel-url" name="url" type="url" placeholder="https://www.youtube.com/@…" required>
+            <button class="button primary add-button" type="submit">チャンネルを追加</button>
+            <p id="add-message" class="form-message" role="status" hidden></p>
+          </form>
+        </section>
+
+        <section class="sidebar-card" aria-labelledby="settings-heading">
+          <div class="card-icon" aria-hidden="true"><span class="settings-icon">⚙︎</span></div>
+          <h2 id="settings-heading">チャンネル設定</h2>
+          <p>過去の配信は終了から24時間で非表示になります。残したいチャンネルを選べます。</p>
+          <div class="sidebar-meta"><span>登録チャンネル</span><strong id="channel-count">—</strong></div>
+          <button class="button secondary settings-button" type="button" data-open-settings>チャンネルを管理 <span aria-hidden="true">↗</span></button>
+        </section>
+      </aside>
+    </div>
+  </main>
+
+  <footer class="shell site-footer">
+    <span>配信日和</span>
+    <span>すべての時刻は日本時間（JST）です。</span>
+  </footer>
+
+  <dialog id="settings-dialog" aria-labelledby="dialog-heading" aria-describedby="dialog-description">
+    <div class="dialog-header">
+      <div>
+        <h2 id="dialog-heading">チャンネル設定</h2>
+        <p id="dialog-description">「過去の配信を残す」を有効にすると、このチャンネルの配信は24時間経過後も表示されます。</p>
+      </div>
+      <form method="dialog"><button class="button icon-button" aria-label="閉じる" type="submit">×</button></form>
+    </div>
+    <div class="dialog-content">
+      <div class="filters dialog-filters">
+        <label class="search-field">
+          <span class="search-icon" aria-hidden="true"></span>
+          <span class="sr-only">チャンネル名で検索</span>
+          <input id="roster-search" type="search" placeholder="チャンネル名で検索">
+        </label>
+        <label class="select-field">
+          <span class="sr-only">所属グループ</span>
+          <select id="roster-group"><option value="">すべてのグループ</option></select>
+        </label>
+      </div>
+      <label class="retained-filter"><input id="roster-retained" type="checkbox">過去の配信を残すチャンネルのみ表示</label>
+      <p id="settings-message" class="form-message" role="status" hidden></p>
+      <ul id="roster-list" class="roster-list" aria-label="登録チャンネル"></ul>
+    </div>
+  </dialog>
+</body>
+</html>
