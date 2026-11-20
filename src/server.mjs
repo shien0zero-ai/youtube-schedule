@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -86,7 +87,8 @@ export function createApp({
       const channel = /^\/api\/channels\/([A-Za-z0-9_-]+)$/.exec(url.pathname);
       if (channel && request.method === 'PATCH') {
         const body = await readJson(request);
-        schedule.setKeepPast(channel[1], body.keepPast);
+        if (body.hidden === false) schedule.restoreChannel(channel[1]);
+        else schedule.setKeepPast(channel[1], body.keepPast);
         return json(response, 200, { ok: true });
       }
       if (channel && request.method === 'DELETE') {
@@ -113,7 +115,24 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     schedule.refresh().catch((error) => console.error('Schedule refresh failed:', error));
   }
   server.listen(port, host, () => {
-    console.log(`YouTube Schedule is running on http://${host}:${server.address().port}`);
+    const { address, port: boundPort } = server.address();
+    const loopback = { '0.0.0.0': '127.0.0.1', '::': '::1' };
+    const localAddress = loopback[address] ?? address;
+    const browserHost = localAddress.includes(':') ? `[${localAddress}]` : localAddress;
+    const url = `http://${browserHost}:${boundPort}`;
+    console.log(`配信日和を開くには、ブラウザで ${url} にアクセスしてください。`);
+    if (process.argv.includes('--open')) {
+      const commands = {
+        darwin: ['open', url],
+        win32: ['rundll32.exe', 'url.dll,FileProtocolHandler', url],
+      };
+      const [command, ...args] = commands[process.platform] ?? ['xdg-open', url];
+      const browser = spawn(command, args, { stdio: 'ignore' });
+      const showAddress = () => console.error(`ブラウザの自動起動に失敗しました。${url} を開いてください。`);
+      browser.on('error', showAddress);
+      browser.on('exit', (code) => { if (code !== 0) showAddress(); });
+      browser.unref();
+    }
     refresh();
   });
   const timer = setInterval(refresh, REFRESH_INTERVAL);

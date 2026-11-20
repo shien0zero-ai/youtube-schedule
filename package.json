@@ -5,6 +5,7 @@
   "type": "module",
   "engines": { "node": ">=24.5" },
   "scripts": {
+    "open": "node --use-env-proxy src/server.mjs --open",
     "start": "node --use-env-proxy src/server.mjs",
     "test": "node --test"
   }

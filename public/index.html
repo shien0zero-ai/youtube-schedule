@@ -95,7 +95,7 @@
           <div class="card-icon" aria-hidden="true"><span class="settings-icon">⚙︎</span></div>
           <h2 id="settings-heading">チャンネル設定</h2>
           <p>過去の配信は終了から24時間で非表示になります。残したいチャンネルを選べます。</p>
-          <div class="sidebar-meta"><span>登録チャンネル</span><strong id="channel-count">—</strong></div>
+          <div class="sidebar-meta"><span>表示中のチャンネル</span><strong id="channel-count">—</strong></div>
           <button class="button secondary settings-button" type="button" data-open-settings>チャンネルを管理 <span aria-hidden="true">↗</span></button>
         </section>
       </aside>
@@ -111,7 +111,7 @@
     <div class="dialog-header">
       <div>
         <h2 id="dialog-heading">チャンネル設定</h2>
-        <p id="dialog-description">「過去の配信を残す」を有効にすると、このチャンネルの配信は24時間経過後も表示されます。</p>
+        <p id="dialog-description">チャンネルごとに配信を非表示にしたり、終了から24時間経った配信を残したりできます。</p>
       </div>
       <form method="dialog"><button class="button icon-button" aria-label="閉じる" type="submit">×</button></form>
     </div>
@@ -127,7 +127,10 @@
           <select id="roster-group"><option value="">すべてのグループ</option></select>
         </label>
       </div>
-      <label class="retained-filter"><input id="roster-retained" type="checkbox">過去の配信を残すチャンネルのみ表示</label>
+      <div class="roster-filters">
+        <label class="retained-filter"><input id="roster-retained" type="checkbox">過去の配信を残すチャンネルのみ</label>
+        <label class="retained-filter"><input id="roster-hidden" type="checkbox">非表示のチャンネルのみ</label>
+      </div>
       <p id="settings-message" class="form-message" role="status" hidden></p>
       <ul id="roster-list" class="roster-list" aria-label="登録チャンネル"></ul>
     </div>

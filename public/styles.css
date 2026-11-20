@@ -194,6 +194,7 @@ dialog::backdrop { background: #14282066; }
 .icon-button:hover { background: var(--mint); }
 .dialog-content { padding: 15px 22px 22px; overflow: auto; }
 .dialog-filters { margin-bottom: 12px; }
+.roster-filters { display: flex; gap: 3px 16px; flex-wrap: wrap; }
 .retained-filter { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: .8rem; }
 .retained-filter input { accent-color: var(--green); width: 16px; height: 16px; }
 #settings-message { margin-top: 9px; }
@@ -206,12 +207,14 @@ dialog::backdrop { background: #14282066; }
 .roster-name { font-size: .9rem; font-weight: 750; text-decoration: none; }
 .roster-name:hover { text-decoration: underline; }
 .roster-group { display: block; margin-top: 3px; color: var(--muted); font-size: .73rem; }
+.hidden-badge { display: inline-block; margin-inline-start: 6px; padding: 1px 4px; border-radius: 4px; background: #edf0ee; color: #515e57; }
 .roster-switch-label { display: flex; align-items: center; gap: 7px; font-size: .76rem; color: #334239; cursor: pointer; }
 .roster-switch { appearance: none; position: relative; width: 35px; height: 20px; margin: 0; border: 1px solid #8d9c92; border-radius: 10px; background: #e8ede8; cursor: pointer; }
 .roster-switch::after { position: absolute; content: ""; left: 2px; top: 2px; width: 14px; height: 14px; border-radius: 50%; background: #68796e; transition: transform .15s; }
 .roster-switch:checked { background: var(--green); border-color: var(--green); }
 .roster-switch:checked::after { transform: translateX(15px); background: #fff; }
-.remove-button { min-height: 30px; padding: 3px 7px; border-color: var(--border); background: white; color: var(--red); font-size: .72rem; }
+.roster-action { min-width: 49px; min-height: 32px; padding: 4px 7px; font-size: .72rem; }
+.remove-button { border-color: var(--border); background: white; color: var(--red); }
 .remove-button:hover:not(:disabled) { background: var(--red-bg); }
 .roster-empty { padding: 18px 0; color: var(--muted); font-size: .83rem; }
 

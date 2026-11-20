@@ -1,5 +1,5 @@
-import { rosterGroups } from './data/hololive-roster.mjs';
-import { getYouTubeVideos } from './youtube.mjs';
+import { officialHololiveChannelId, rosterGroups } from './data/hololive-roster.mjs';
+import { getYouTubeChannel, getYouTubeVideos } from './youtube.mjs';
 
 const officialUrl = 'https://schedule.hololive.tv/';
 const hour = 60 * 60 * 1000;
@@ -12,6 +12,7 @@ const groups = Object.entries(rosterGroups).flatMap(([group, rows]) => rows.map(
 ));
 const roster = groups.map(({ channel }) => channel);
 const channelsById = new Map(roster.map((channel) => [channel.id, channel]));
+const officialChannel = channelsById.get(officialHololiveChannelId);
 const videoCaches = new WeakMap();
 
 function decodeText(value) {
@@ -35,14 +36,6 @@ function nameKey(name) {
 
 const channelsByName = new Map(groups.flatMap(({ channel, aliases }) =>
   [channel.name, ...aliases].map((name) => [nameKey(name), channel])));
-
-function findChannel(name) {
-  const key = nameKey(name);
-  const direct = channelsByName.get(key);
-  if (direct) return direct;
-  const asobiName = key.match(/(?:メラ|ソピア|つづり|ツヅリ)$/)?.[0];
-  return asobiName ? channelsByName.get(asobiName) : null;
-}
 
 function attributes(tag) {
   const entries = {};
@@ -121,7 +114,7 @@ export function parseOfficialSchedule(html, now = Date.now()) {
       const id = youtubeId(attrs.href);
       if (!id) continue;
       const card = rest().split(/<\/a>/i, 1)[0];
-      const channel = findChannel(cardField(card, 'name'));
+      const channel = channelsByName.get(nameKey(cardField(card, 'name')));
       if (!channel) continue;
       const [, hours, minutes] = cardField(card, 'datetime').match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/) ?? [];
       if (!date || !hours) throw new Error('ホロジュールの配信日時を読み取れませんでした。');
@@ -190,29 +183,45 @@ async function enrichAvailable(records, fetchImpl, time, apiKey) {
   return { streams, incomplete };
 }
 
+async function readOfficialSchedule(fetchImpl, time, apiKey) {
+  const response = await fetchImpl(officialUrl, {
+    headers: { Accept: 'text/html', 'Accept-Language': 'ja', Cookie: 'timezone=Asia/Tokyo' },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const records = parseOfficialSchedule(await response.text(), time);
+  return enrichAvailable(records, fetchImpl, time, apiKey);
+}
+
+async function readOfficialChannel(fetchImpl, apiKey) {
+  const channel = await getYouTubeChannel(officialChannel.url, { fetchImpl, apiKey });
+  if (channel.channelId !== officialChannel.id) throw new Error('公式チャンネルのIDが一致しません。');
+  return channel;
+}
+
 export async function getHololive({ fetchImpl = fetch, now = Date.now, apiKey = process.env.YOUTUBE_API_KEY } = {}) {
-  let records;
-  const time = now();
-  try {
-    const response = await fetchImpl(officialUrl, {
-      headers: { Accept: 'text/html', 'Accept-Language': 'ja', Cookie: 'timezone=Asia/Tokyo' },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    records = parseOfficialSchedule(await response.text(), time);
-  } catch {
-    return {
-      channels: roster,
-      streams: [],
-      scheduleAvailable: false,
-      warning: '公式ホロジュールに接続できないか、配信一覧を読み取れませんでした。',
-    };
-  }
-  const { streams, incomplete } = await enrichAvailable(records, fetchImpl, time, apiKey);
+  const [scheduleResult, channelResult] = await Promise.allSettled([
+    readOfficialSchedule(fetchImpl, now(), apiKey),
+    readOfficialChannel(fetchImpl, apiKey),
+  ]);
+  const schedule = scheduleResult.status === 'fulfilled' ? scheduleResult.value : null;
+  const channel = channelResult.status === 'fulfilled' ? channelResult.value : null;
+  const warnings = [];
+  if (!schedule) warnings.push('公式ホロジュールに接続できないか、配信一覧を読み取れませんでした。');
+  else if (schedule.incomplete) warnings.push('一部の配信は公式ホロジュールの時刻と配信中表示で分類しています。');
+  if (!channel || channel.warning) warnings.push('ホロライブ公式の YouTube チャンネルから配信一覧を取得できませんでした。');
+
+  const streams = new Map((schedule?.streams ?? []).map((stream) => [stream.id, stream]));
+  for (const stream of channel?.streams ?? []) streams.set(stream.id, { ...stream, channelId: officialChannel.id });
+
+  const updatedChannelIds = schedule ? roster.filter(({ id }) => id !== officialChannel.id).map(({ id }) => id) : [];
+  if (channel && !channel.warning) updatedChannelIds.push(officialChannel.id);
+
   return {
     channels: roster,
-    streams,
-    scheduleAvailable: true,
-    ...(incomplete ? { warning: '一部の配信は公式ホロジュールの時刻と配信中表示で分類しています。' } : {}),
+    streams: [...streams.values()],
+    scheduleAvailable: Boolean(schedule),
+    updatedChannelIds,
+    warnings,
   };
 }

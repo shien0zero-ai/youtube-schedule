@@ -1,11 +1,14 @@
 // Official roster: https://hololive.hololivepro.com/talents/
-// Cross-checked against the August 2026 official roster mirror and November 2026 channel lists.
+// Cross-checked against the official Japanese roster on 2026-11-20.
 // https://github.com/prayzero/hololive-schedule/blob/main/public/data/talents.json
 // https://github.com/seangcs27/dossier/blob/master/scripts/lib/holodori-outside.mjs
 // https://github.com/physicsdog0505/HoloViewer/blob/main/data/search/member_aliases.v1.json
 // Each row is a YouTube channel, with alternate names used by the official schedule.
+export const officialHololiveChannelId = 'UCJFZiqLMntJufDCHc6bQixg';
+
 export const rosterGroups = {
   "ホロライブ JP": [
+    [officialHololiveChannelId, "ホロライブ公式", ["ホロライブ", "hololive"], null, "official"],
     ["UCp6993wxpyDPHUpavwDFqgg","ときのそら",["Tokino Sora","Sora","そら","そらちゃん"],"https://hololive.hololivepro.com/wp-content/uploads/2021/05/tokino_sora_thumb.png"],
     ["UCDqI2jOz0weumE8s7paEk6g","ロボ子さん",["Robocosan","Roboco-san","Roboco","ロボ子"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Robocosan_list_thumb.png"],
     ["UC-hM6YJuNYVAmUWxeIr9FeA","さくらみこ",["Sakura Miko","Miko","Mikochi","みこ","みこち"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Sakura-Miko_list_thumb.png"],
@@ -37,10 +40,11 @@ export const rosterGroups = {
     ["UC6eWCld0KwmyHFbAqK3V-Rw","博衣こより",["Hakui Koyori","Koyori","Koyo","こより","こよ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Hakui-Koyori_list_thumb.png"],
     ["UC_vMYWcDjmfdpH6r4TTn1MQ","風真いろは",["Kazama Iroha","Iroha","いろは","ござる"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Kazama-Iroha_list_thumb.png"],
     ["UCIBY1ollUsauvVi4hW4cumw","沙花叉クロヱ",["Sakamata Chloe","Chloe","Sakamata","クロヱ","クロエ","沙花叉"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Sakamata-Chloe_list_thumb.png","affiliate"],
-    ["UC8eitCE9Z6EwUCs-VUi1blg","Achichi Mela",["Mela","メラ"],null],
-    ["UCy9mgxB8pn2C4aNK_MPthDQ","Sorashina Sopia",["Sopia","ソピア"],null],
-    ["UCROQtXcp2loQEmvpe5rhJzQ","Suzuna Tsuzuri",["Tsuzuri","つづり","ツヅリ"],null],
-    ["UCSjQDxud2HkAO2DVD3lwxmw","百灯キョーコ",["Hyakuto Kyoko","Kyoko","キョーコ"],null],
+    ["UC8eitCE9Z6EwUCs-VUi1blg","熱千めら",["Achichi Mela","Mela","めら","メラ"],"https://hololive.hololivepro.com/wp-content/uploads/2023/09/Achichi-Mela_list_thumb.png"],
+    ["UCy9mgxB8pn2C4aNK_MPthDQ","宙科そぴあ",["Sorashina Sopia","Sopia","そぴあ","ソピア"],"https://hololive.hololivepro.com/wp-content/uploads/2023/09/Sorashina-Sopia_list_thumb.png"],
+    ["UCROQtXcp2loQEmvpe5rhJzQ","鈴鳴つづり",["Suzuna Tsuzuri","Tsuzuri","つづり","ツヅリ"],"https://hololive.hololivepro.com/wp-content/uploads/2023/09/Suzuna-Tsuzuri_list_thumb.png"],
+    ["UCSjQDxud2HkAO2DVD3lwxmw","百灯キョーコ",["Hyakuto Kyoko","Kyoko","キョーコ"],"https://hololive.hololivepro.com/wp-content/uploads/2023/09/Hyakuto-Kyoko_list_thumb.png"],
+    ["UCozx5csNhCx1wsVq3SZVkBQ","holoAN room（ホロアナ）",["holoAN room","holoAN","ホロアナ","井月みちる","花園さやか","風白ゆき","Izuki Michiru","Hanazono Sayaka","Kazeshiro Yuki"],"https://yt3.ggpht.com/bLqkQmKBq5rRp53-TLpg1wa9Bn0aFwmjsnZ6LTPgq0NjJSs2304Rm61481alRP8mTdyNLFiJ9c0=s88-c-k-c0x00ffffff-no-rj"],
   ],
   "ホロライブ ID": [
     ["UCOyYb1c43VlX9rc_lT6NKQw","Ayunda Risu",["アユンダ・リス","Risu","リス"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Ayunda-Risu_list_thumb.png"],

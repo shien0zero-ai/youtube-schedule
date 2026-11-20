@@ -24,6 +24,7 @@ const dialog = byId("settings-dialog");
 const rosterSearch = byId("roster-search");
 const rosterGroup = byId("roster-group");
 const retainedFilter = byId("roster-retained");
+const hiddenFilter = byId("roster-hidden");
 const form = byId("add-channel-form");
 const channelUrl = byId("channel-url");
 const refreshButton = byId("refresh");
@@ -106,6 +107,13 @@ function setGroups(select, channels) {
   if (groups.includes(selected)) select.value = selected;
 }
 
+function updateChannelControls(channels) {
+  const visible = channels.filter((channel) => !channel.hidden);
+  setGroups(scheduleGroup, visible);
+  setGroups(rosterGroup, channels);
+  byId("channel-count").textContent = visible.length.toLocaleString("ja-JP");
+}
+
 async function loadSchedule({ refresh = false } = {}) {
   const version = ++state.loadVersion;
   state.loading = true;
@@ -117,9 +125,7 @@ async function loadSchedule({ refresh = false } = {}) {
     if (version !== state.loadVersion) return;
     state.data = data;
     state.error = null;
-    setGroups(scheduleGroup, data.channels);
-    setGroups(rosterGroup, data.channels);
-    byId("channel-count").textContent = data.channels.length.toLocaleString("ja-JP");
+    updateChannelControls(data.channels);
     if (dialog.open) renderRoster();
   } catch (error) {
     if (version === state.loadVersion) state.error = error.message;
@@ -264,6 +270,7 @@ function renderSchedule() {
   const channels = new Map(data.channels.map((channel) => [channel.id, channel]));
   const matches = data.streams.filter((stream) => {
     const channel = channels.get(stream.channelId);
+    if (channel?.hidden) return false;
     if (groups && groups !== channel?.group) return false;
     return !query || searchValue(stream.title).includes(query) || searchValue(channel?.name).includes(query);
   });
@@ -311,6 +318,7 @@ function selectTab(tab) {
 
 function rosterRow(channel) {
   const row = element("li", "roster-row");
+  row.dataset.channelId = channel.id;
   const avatar = element("div", "roster-avatar");
   avatar.setAttribute("aria-hidden", "true");
   media(avatar, channel.avatar, Array.from(channel.name)[0] || "▶");
@@ -322,35 +330,43 @@ function rosterRow(channel) {
     name.target = "_blank";
     name.rel = "noopener noreferrer";
   }
-  identity.append(name, element("span", "roster-group", channel.group));
+  const group = element("span", "roster-group", channel.group);
+  if (channel.hidden) group.append(element("span", "hidden-badge", "非表示"));
+  identity.append(name, group);
+  row.append(avatar, identity);
 
-  const label = element("label", "roster-switch-label");
-  const toggle = element("input", "roster-switch");
-  toggle.type = "checkbox";
-  toggle.setAttribute("role", "switch");
-  toggle.setAttribute("aria-label", channel.name + "の過去の配信を残す");
-  toggle.dataset.toggle = channel.id;
-  toggle.checked = channel.keepPast;
-  toggle.disabled = state.pendingChannels.has(channel.id);
-  toggle.addEventListener("change", () => {
-    mutateChannel(channel, "PATCH", { keepPast: toggle.checked }, "過去の配信の設定を保存しました。", "toggle");
-  });
-  label.append(toggle, element("span", "", "過去の配信を残す"));
-  row.append(avatar, identity, label);
-
-  if (channel.custom) {
-    const remove = element("button", "button remove-button", "削除");
-    remove.type = "button";
-    remove.dataset.remove = channel.id;
-    remove.disabled = state.pendingChannels.has(channel.id);
-    remove.setAttribute("aria-label", channel.name + "を削除");
-    remove.addEventListener("click", () => {
-      if (window.confirm(channel.name + "を一覧から削除しますか？")) {
-        mutateChannel(channel, "DELETE", undefined, "チャンネルを削除しました。", "remove");
-      }
+  if (!channel.hidden) {
+    const label = element("label", "roster-switch-label");
+    const toggle = element("input", "roster-switch");
+    toggle.type = "checkbox";
+    toggle.setAttribute("role", "switch");
+    toggle.setAttribute("aria-label", channel.name + "の過去の配信を残す");
+    toggle.dataset.toggle = channel.id;
+    toggle.checked = channel.keepPast;
+    toggle.disabled = state.pendingChannels.has(channel.id);
+    toggle.addEventListener("change", () => {
+      mutateChannel(channel, "PATCH", { keepPast: toggle.checked }, "過去の配信の設定を保存しました。", "toggle");
     });
-    row.append(remove);
+    label.append(toggle, element("span", "", "過去の配信を残す"));
+    row.append(label);
   }
+
+  const actionName = channel.hidden ? "再表示" : channel.custom ? "削除" : "非表示";
+  const action = element("button", channel.custom ? "button roster-action remove-button" : "button secondary roster-action", actionName);
+  action.type = "button";
+  action.dataset.action = channel.id;
+  action.disabled = state.pendingChannels.has(channel.id);
+  action.setAttribute("aria-label", channel.name + "を" + actionName);
+  action.addEventListener("click", () => {
+    if (channel.hidden) {
+      mutateChannel(channel, "PATCH", { hidden: false }, "チャンネルを再表示しました。", "action");
+      return;
+    }
+    if (channel.custom && !window.confirm(channel.name + "を一覧から削除しますか？")) return;
+    const message = channel.custom ? "チャンネルを削除しました。" : "チャンネルを非表示にしました。";
+    mutateChannel(channel, "DELETE", undefined, message, "action");
+  });
+  row.append(action);
   return row;
 }
 
@@ -359,10 +375,11 @@ function renderRoster(focusAfter) {
   const query = searchValue(rosterSearch.value);
   const group = rosterGroup.value;
   const current = document.activeElement?.dataset;
-  const focus = focusAfter ?? (current?.toggle ? ["toggle", current.toggle] : current?.remove ? ["remove", current.remove] : null);
+  const focus = focusAfter ?? (current?.toggle ? ["toggle", current.toggle] : current?.action ? ["action", current.action] : null);
   const channels = (state.data?.channels ?? []).filter((channel) => {
     if (group && channel.group !== group) return false;
     if (retainedFilter.checked && !channel.keepPast) return false;
+    if (hiddenFilter.checked && !channel.hidden) return false;
     return !query || searchValue(channel.name).includes(query);
   });
   list.replaceChildren();
@@ -383,9 +400,7 @@ async function mutateChannel(channel, method, body, success, focusTarget) {
   const message = byId("settings-message");
   state.pendingChannels.add(channel.id);
   setMessage(message);
-  const row = [...byId("roster-list").children].find((candidate) => {
-    return candidate.querySelector(".roster-switch")?.dataset.toggle === channel.id;
-  });
+  const row = [...byId("roster-list").children].find((candidate) => candidate.dataset.channelId === channel.id);
   row?.querySelectorAll("input, button").forEach((control) => {
     control.disabled = true;
   });
@@ -395,13 +410,18 @@ async function mutateChannel(channel, method, body, success, focusTarget) {
       method,
       ...(body && { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
     });
+    const current = state.data.channels.find(({ id }) => id === channel.id);
     if (method === "DELETE") {
-      state.data.channels = state.data.channels.filter(({ id }) => id !== channel.id);
+      if (channel.custom) {
+        state.data.channels = state.data.channels.filter(({ id }) => id !== channel.id);
+      } else if (current) {
+        current.hidden = true;
+      }
       state.data.streams = state.data.streams.filter(({ channelId }) => channelId !== channel.id);
-    } else {
-      const current = state.data.channels.find(({ id }) => id === channel.id);
-      if (current) current.keepPast = body.keepPast;
+    } else if (current) {
+      Object.assign(current, body);
     }
+    updateChannelControls(state.data.channels);
     setMessage(message, success);
     await loadSchedule();
   } catch (error) {
@@ -444,6 +464,7 @@ scheduleGroup.addEventListener("change", renderSchedule);
 rosterSearch.addEventListener("input", () => renderRoster());
 rosterGroup.addEventListener("change", () => renderRoster());
 retainedFilter.addEventListener("change", () => renderRoster());
+hiddenFilter.addEventListener("change", () => renderRoster());
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();

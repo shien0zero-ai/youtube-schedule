@@ -75,10 +75,16 @@ test('schedule API exposes all statuses and persists selected retention and adde
   assert.equal((await request('/api/channels', 'POST', { url: 'https://www.youtube.com/@custom' })).status, 409);
   assert.equal((await request('/api/channels', 'POST', { url: 'https://www.youtube.com/@other' })).status, 409);
   assert.equal((await request('/api/channels', 'POST', { url: 'https://example.com/@custom' })).status, 400);
+  assert.equal((await request('/api/channels/official', 'DELETE')).status, 200);
 
   time += 2 * hour;
   const restarted = await startApp(t, options);
+  const hidden = await (await restarted('/api/schedule')).json();
+  assert.equal(hidden.channels.find(({ id }) => id === official.id).hidden, true);
+  assert.deepEqual(hidden.streams.map(({ id }) => id), ['custom-next']);
+  assert.equal((await restarted('/api/channels/official', 'PATCH', { hidden: false })).status, 200);
   const snapshot = await (await restarted('/api/schedule')).json();
+  assert.equal(snapshot.channels.find(({ id }) => id === official.id).hidden, false);
   assert.equal(snapshot.channels.find(({ id }) => id === official.id).keepPast, true);
   assert.equal(snapshot.channels.find(({ id }) => id === custom.channelId).custom, true);
   assert.ok(snapshot.streams.some(({ id }) => id === 'recent'));

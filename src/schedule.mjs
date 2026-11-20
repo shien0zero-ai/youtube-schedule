@@ -43,7 +43,7 @@ function mergeStreams(existing, incoming, time) {
 }
 
 export function createScheduleService({ file, getHololive, getYouTubeChannel, normalizeChannelUrl, now = Date.now }) {
-  let state = readState(file);
+  let state = { hidden: [], ...readState(file) };
   let lastAttempt = null;
   let warnings = [];
   let refreshing;
@@ -81,12 +81,15 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     }));
 
     const official = await hololive;
-    const activeCustom = new Set(state.custom.map(({ id }) => id));
     const officialWarnings = official?.warnings ?? (official?.warning ? [official.warning] : []);
     const officialReady = official !== null && (official.scheduleAvailable ?? (officialWarnings.length === 0));
     const roster = official?.channels?.length ? official.channels : state.roster;
+    const presetIds = new Set(roster.map(({ id }) => id));
+    const custom = state.custom.filter(({ id }) => !presetIds.has(id));
+    const activeCustom = new Set(custom.map(({ id }) => id));
     const updatedChannels = new Set(successful);
-    if (officialReady) for (const { id } of roster) updatedChannels.add(id);
+    const officialUpdated = official?.updatedChannelIds ?? (officialReady ? presetIds : []);
+    for (const id of officialUpdated) updatedChannels.add(id);
     const incoming = [
       ...(official?.streams ?? []),
       ...customStreams.filter(({ channelId }) => activeCustom.has(channelId)),
@@ -95,10 +98,10 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     const existing = state.streams.filter((stream) =>
       stream.status === 'past' || incomingIds.has(stream.id) || !updatedChannels.has(stream.channelId));
     const streams = mergeStreams(existing, incoming, now());
-    const updatedAt = officialReady || [...successful].some((id) => activeCustom.has(id))
+    const updatedAt = officialReady || official?.updatedChannelIds?.length || [...successful].some((id) => activeCustom.has(id))
       ? new Date(now()).toISOString()
       : state.updatedAt;
-    save({ ...state, roster, streams, updatedAt });
+    save({ ...state, roster, custom, streams, updatedAt });
     warnings = [
       ...(official === null ? ['ホロライブの配信情報を取得できませんでした。'] : officialWarnings),
       ...failures.filter(({ id }) => activeCustom.has(id))
@@ -118,11 +121,15 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     const channels = [
       ...state.roster.map((channel) => ({ ...channel, custom: false })),
       ...state.custom.map((channel) => ({ ...channel, custom: true })),
-    ].map((channel) => ({ ...channel, keepPast: state.preferences[channel.id] === true }));
+    ].map((channel) => ({
+      ...channel,
+      keepPast: state.preferences[channel.id] === true,
+      hidden: state.hidden.includes(channel.id),
+    }));
 
     return {
       channels,
-      streams: retainStreams(state.streams, channels, state.preferences, now()),
+      streams: retainStreams(state.streams, channels.filter(({ hidden }) => !hidden), state.preferences, now()),
       warnings,
       updatedAt: state.updatedAt ?? null,
     };
@@ -152,6 +159,9 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
 
     if ([...state.roster, ...state.custom].some((channel) => channel.id === result.channelId ||
       channel.url === url)) {
+      if (state.hidden.includes(result.channelId)) {
+        throw new ScheduleError(409, 'このチャンネルは非表示です。チャンネル設定から元に戻せます。');
+      }
       throw new ScheduleError(409, 'このチャンネルはすでに登録されています。');
     }
 
@@ -159,7 +169,7 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     if (result.avatar) channel.avatar = result.avatar;
     const streams = mergeStreams(state.streams, result.streams.map((stream) => ({ ...stream, channelId: channel.id })), now());
     save({ ...state, custom: [...state.custom, channel], streams, updatedAt: new Date(now()).toISOString() });
-    return { ...channel, custom: true, keepPast: false };
+    return { ...channel, custom: true, keepPast: false, hidden: false };
   }
 
   function setKeepPast(id, keepPast) {
@@ -171,15 +181,26 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
   }
 
   function removeChannel(id) {
+    if (state.roster.some((channel) => channel.id === id)) {
+      if (!state.hidden.includes(id)) save({ ...state, hidden: [...state.hidden, id] });
+      return;
+    }
     if (!state.custom.some((channel) => channel.id === id)) {
-      throw new ScheduleError(404, '追加したチャンネルが見つかりませんでした。');
+      throw new ScheduleError(404, 'チャンネルが見つかりませんでした。');
     }
     const preferences = { ...state.preferences };
     delete preferences[id];
     save({ ...state, custom: state.custom.filter((channel) => channel.id !== id), preferences });
   }
 
-  return { refresh, snapshot, addChannel, setKeepPast, removeChannel };
+  function restoreChannel(id) {
+    if (!state.roster.some((channel) => channel.id === id)) {
+      throw new ScheduleError(404, '初期登録チャンネルが見つかりませんでした。');
+    }
+    save({ ...state, hidden: state.hidden.filter((hiddenId) => hiddenId !== id) });
+  }
+
+  return { refresh, snapshot, addChannel, setKeepPast, removeChannel, restoreChannel };
 }
 
 export { REFRESH_INTERVAL };
