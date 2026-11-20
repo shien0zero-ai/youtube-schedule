@@ -1,1 +1,3144 @@
+From cffc4c6799af15fe8cc1f72d7412b87250667a22 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=E3=81=AF=E3=82=8B=E3=81=8D?= <shien0zero@gmail.com>
+Date: Fri, 20 Nov 2026 07:34:28 +0000
+Subject: [PATCH 1/2] Build Hololive YouTube stream schedule dashboard
+
+---
+ .gitignore                   |   3 +
+ README.md                    |  36 +++
+ package.json                 |  11 +
+ public/app.js                | 480 +++++++++++++++++++++++++++++++++++
+ public/index.html            | 136 ++++++++++
+ public/styles.css            | 261 +++++++++++++++++++
+ src/data/hololive-roster.mjs |  84 ++++++
+ src/hololive.mjs             | 218 ++++++++++++++++
+ src/schedule.mjs             | 185 ++++++++++++++
+ src/server.mjs               | 122 +++++++++
+ src/youtube.mjs              | 368 +++++++++++++++++++++++++++
+ test/hololive.test.mjs       |  75 ++++++
+ test/schedule.test.mjs       | 115 +++++++++
+ test/youtube.test.mjs        | 153 +++++++++++
+ 14 files changed, 2247 insertions(+)
+ create mode 100644 .gitignore
+ create mode 100644 README.md
+ create mode 100644 package.json
+ create mode 100644 public/app.js
+ create mode 100644 public/index.html
+ create mode 100644 public/styles.css
+ create mode 100644 src/data/hololive-roster.mjs
+ create mode 100644 src/hololive.mjs
+ create mode 100644 src/schedule.mjs
+ create mode 100644 src/server.mjs
+ create mode 100644 src/youtube.mjs
+ create mode 100644 test/hololive.test.mjs
+ create mode 100644 test/schedule.test.mjs
+ create mode 100644 test/youtube.test.mjs
+
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..25a9edf
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,3 @@
++.data/
++node_modules/
++.env
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..130c756
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,36 @@
++# 配信日和
++
++ホロライブ所属の女性タレントと、追加した YouTube チャンネルの公開配信を日本時間で確認できるローカル Web アプリです。配信は「配信中」「今後の配信」「過去の配信」に分かれます。
++
++## 起動
++
++Node.js 24.5 以降で、リポジトリのルートから実行します。追加のパッケージは不要です。
++
++```sh
++npm start
++```
++
++ブラウザで `http://127.0.0.1:3000` を開きます。ポートは `PORT` で変更できます。デフォルトはループバック接続です。クラウドのポート公開を利用する場合は `HOST=0.0.0.0 npm start` で起動できます。設定と履歴は同じサーバーを使う利用者で共有されます。
++
++## 使い方
++
++- 「チャンネルを追加」に YouTube チャンネルの URL を入力します。例は `https://www.youtube.com/@NASA` です。
++- 過去配信は終了から原則24時間で一覧と保存対象から外れます。終了時刻が取得できない場合は、配信の終了を確認した時刻か開始時刻を基準にします。「チャンネル設定」で「過去の配信を残す」を有効にすると、そのチャンネルの取得済みの配信を24時間経過後も表示します。取得済みの範囲で履歴を残します。
++- サーバーの稼働中は約2分ごとに配信情報を取得します。通信に失敗した場合は画面にメッセージが出ます。
++- 追加チャンネル、保存設定、取得した履歴は `.data/schedule.json` に保存されます。別の保存先を使う場合は `SCHEDULE_DATA_FILE` にファイルパスを設定してください。
++
++## 配信データと通信
++
++ホロライブの公式スケジュールと YouTube の公開情報を取得します。YouTube の配信枠を対象にしており、限定公開・メンバー限定など取得できない枠があります。さかのぼれる範囲は取得元が公開している一覧に依存します。取得元への接続が制限されている環境では、`schedule.hololive.tv` と `www.youtube.com` への HTTPS 通信を許可してください。サムネイルには `i.ytimg.com` へのアクセスを使います。
++
++初期のチャンネル一覧には JP・ID・EN・DEV_IS の女性タレントとアフィリエイトを収録しています。FUWAMOCO は共有チャンネル1件として表示します。名簿を更新するときは `src/data/hololive-roster.mjs` を編集してください。
++
++公開ページからの取得には API キーが不要です。YouTube Data API v3 を利用する場合は、環境変数 `YOUTUBE_API_KEY` を設定し、`www.googleapis.com` への HTTPS 通信も許可してください。公開ページに接続できない場合、追加チャンネルの情報は API のアップロード一覧に含まれる配信に限られます。
++
++## テスト
++
++```sh
++npm test
++```
++
++テストは外部サービスの応答を置き換えて実行します。
+diff --git a/package.json b/package.json
+new file mode 100644
+index 0000000..9468b4e
+--- /dev/null
++++ b/package.json
+@@ -0,0 +1,11 @@
++{
++  "name": "youtube-schedule",
++  "version": "1.0.0",
++  "private": true,
++  "type": "module",
++  "engines": { "node": ">=24.5" },
++  "scripts": {
++    "start": "node --use-env-proxy src/server.mjs",
++    "test": "node --test"
++  }
++}
+diff --git a/public/app.js b/public/app.js
+new file mode 100644
+index 0000000..12281a0
+--- /dev/null
++++ b/public/app.js
+@@ -0,0 +1,480 @@
++const statusLabels = {
++  live: "配信中",
++  upcoming: "配信予定",
++  past: "配信終了",
++};
++
++const emptyStates = {
++  live: ["配信中のライブはありません", "「今後の配信」から次のライブをチェックできます。"],
++  upcoming: ["今後の配信予定はありません", "配信予定が公開されると、ここに表示されます。"],
++  past: ["表示できる過去の配信はありません", "終了から24時間以内の配信と、設定で残した配信が表示されます。"],
++};
++
++const timeZone = "Asia/Tokyo";
++const shortDay = new Intl.DateTimeFormat("ja-JP", { timeZone, month: "long", day: "numeric", weekday: "short" });
++const dateKey = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
++const clock = new Intl.DateTimeFormat("ja-JP", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
++const nameOrder = new Intl.Collator("ja-JP");
++
++const byId = (id) => document.getElementById(id);
++const schedulePanel = byId("schedule-panel");
++const scheduleSearch = byId("schedule-search");
++const scheduleGroup = byId("schedule-group");
++const dialog = byId("settings-dialog");
++const rosterSearch = byId("roster-search");
++const rosterGroup = byId("roster-group");
++const retainedFilter = byId("roster-retained");
++const form = byId("add-channel-form");
++const channelUrl = byId("channel-url");
++const refreshButton = byId("refresh");
++const tabs = [...document.querySelectorAll(".tab")];
++
++const state = {
++  status: "live",
++  data: null,
++  error: null,
++  loading: true,
++  loadVersion: 0,
++  pendingChannels: new Set(),
++};
++
++function element(tag, className, value) {
++  const node = document.createElement(tag);
++  if (className) node.className = className;
++  if (value != null) node.textContent = value;
++  return node;
++}
++
++function validDate(value) {
++  if (!value) return null;
++  const date = new Date(value);
++  return Number.isNaN(date.getTime()) ? null : date;
++}
++
++function httpsUrl(value) {
++  try {
++    const url = new URL(value);
++    return url.protocol === "https:" ? url.href : null;
++  } catch {
++    return null;
++  }
++}
++
++function searchValue(value) {
++  return String(value ?? "").normalize("NFKC").toLocaleLowerCase("ja-JP").trim();
++}
++
++function setMessage(node, value = "", kind = "success") {
++  node.textContent = value;
++  node.dataset.kind = kind;
++  node.hidden = !value;
++}
++
++function updateDate() {
++  const now = new Date();
++  byId("today-date").dateTime = dateKey.format(now);
++  byId("today-date").textContent = shortDay.format(now);
++}
++
++async function request(path, options) {
++  let response;
++  try {
++    response = await fetch(path, options);
++  } catch {
++    throw new Error("サーバーに接続できませんでした。");
++  }
++  let payload;
++  try {
++    payload = await response.json();
++  } catch {
++    throw new Error("サーバーから配信データを受信できませんでした。");
++  }
++  if (!response.ok) {
++    throw new Error(typeof payload?.error === "string" ? payload.error : "リクエストに失敗しました。");
++  }
++  return payload;
++}
++
++function setGroups(select, channels) {
++  const selected = select.value;
++  const groups = [...new Set(channels.map((channel) => channel.group).filter(Boolean))];
++  groups.sort(nameOrder.compare);
++  select.replaceChildren(
++    new Option("すべてのグループ", ""),
++    ...groups.map((group) => new Option(group, group)),
++  );
++  if (groups.includes(selected)) select.value = selected;
++}
++
++async function loadSchedule({ refresh = false } = {}) {
++  const version = ++state.loadVersion;
++  state.loading = true;
++  refreshButton.disabled = true;
++  refreshButton.setAttribute("aria-busy", "true");
++  renderSchedule();
++  try {
++    const data = await request(refresh ? "/api/schedule?refresh=1" : "/api/schedule", { cache: "no-store" });
++    if (version !== state.loadVersion) return;
++    state.data = data;
++    state.error = null;
++    setGroups(scheduleGroup, data.channels);
++    setGroups(rosterGroup, data.channels);
++    byId("channel-count").textContent = data.channels.length.toLocaleString("ja-JP");
++    if (dialog.open) renderRoster();
++  } catch (error) {
++    if (version === state.loadVersion) state.error = error.message;
++  } finally {
++    if (version === state.loadVersion) {
++      state.loading = false;
++      refreshButton.disabled = false;
++      refreshButton.removeAttribute("aria-busy");
++      updateDate();
++      renderSchedule();
++      if (dialog.open && !state.data) renderRoster();
++    }
++  }
++}
++
++function renderAlerts() {
++  const node = byId("schedule-alerts");
++  const warnings = [...new Set(state.data?.warnings ?? [])].filter(Boolean);
++  if (state.error && state.data) warnings.unshift("更新に失敗したため、直前に取得した情報を表示しています。");
++  node.hidden = warnings.length === 0;
++  node.replaceChildren();
++  if (warnings.length === 1) {
++    node.textContent = warnings[0];
++  } else if (warnings.length > 1) {
++    const list = element("ul");
++    list.append(...warnings.map((message) => element("li", "", message)));
++    node.append(list);
++  }
++}
++
++function stateCard(title, description, { loading = false, action, actionLabel } = {}) {
++  const card = element("div", "state-card");
++  const icon = element("div", "state-icon");
++  icon.setAttribute("aria-hidden", "true");
++  icon.append(element("span", loading ? "spinner" : "radio-icon"));
++  card.append(icon, element("h3", "", title));
++  if (description) card.append(element("p", "", description));
++  if (action) {
++    const button = element("button", "button secondary", actionLabel);
++    button.type = "button";
++    button.addEventListener("click", action);
++    card.append(button);
++  }
++  return card;
++}
++
++function media(container, source, fallbackText) {
++  const sourceUrl = httpsUrl(source);
++  const showFallback = () => container.replaceChildren(element("span", "", fallbackText));
++  if (!sourceUrl) {
++    showFallback();
++    return;
++  }
++  const image = element("img");
++  image.alt = "";
++  image.loading = "lazy";
++  image.decoding = "async";
++  image.referrerPolicy = "no-referrer";
++  image.addEventListener("error", showFallback, { once: true });
++  image.src = sourceUrl;
++  container.append(image);
++}
++
++function renderStream(stream, channel) {
++  const streamUrl = httpsUrl(stream.url);
++  const card = element(streamUrl ? "a" : "article", "stream");
++  if (streamUrl) {
++    card.href = streamUrl;
++    card.target = "_blank";
++    card.rel = "noopener noreferrer";
++  }
++
++  const preview = element("div", "stream-thumb");
++  preview.setAttribute("aria-hidden", "true");
++  media(preview, stream.thumbnail, "▶");
++
++  const body = element("div", "stream-body");
++  const meta = element("div", "stream-meta");
++  const badge = element("span", "status-badge", statusLabels[stream.status]);
++  badge.dataset.status = stream.status;
++  meta.append(badge);
++  const streamDate = validDate(stream.startAt);
++  if (streamDate) {
++    const time = element("time", "", clock.format(streamDate));
++    time.dateTime = streamDate.toISOString();
++    meta.append(time);
++  }
++  body.append(meta, element("h4", "stream-title", stream.title || "タイトル未定"));
++  if (channel?.name) body.append(element("p", "stream-channel", channel.name));
++  card.append(preview, body);
++  if (streamUrl) {
++    const arrow = element("span", "stream-arrow", "↗");
++    arrow.setAttribute("aria-hidden", "true");
++    card.append(arrow);
++  }
++  return card;
++}
++
++function renderStreams(streams, channels) {
++  const groups = new Map();
++  for (const stream of streams) {
++    const date = validDate(stream.startAt);
++    const key = date ? dateKey.format(date) : "";
++    if (!groups.has(key)) {
++      groups.set(key, { title: date ? shortDay.format(date) : "日時未定", streams: [] });
++    }
++    groups.get(key).streams.push(stream);
++  }
++
++  return [...groups.values()].map((group) => {
++    const section = element("section", "stream-group");
++    const list = element("div", "stream-list");
++    list.append(...group.streams.map((stream) => renderStream(stream, channels.get(stream.channelId))));
++    section.append(element("h3", "stream-day", group.title), list);
++    return section;
++  });
++}
++
++function renderSchedule() {
++  const { data, loading, error, status } = state;
++  const updated = validDate(data?.updatedAt);
++  byId("sync-status").textContent = loading
++    ? "配信情報を取得中"
++    : updated ? "最終更新 " + clock.format(updated) + " JST" : "配信情報を取得できませんでした";
++  schedulePanel.setAttribute("aria-busy", String(loading));
++  renderAlerts();
++
++  if (!data) {
++    if (loading) {
++      schedulePanel.replaceChildren(stateCard("配信情報を取得しています", "", { loading: true }));
++    } else {
++      schedulePanel.replaceChildren(stateCard("配信情報を取得できませんでした", error, {
++        action: () => loadSchedule({ refresh: true }),
++        actionLabel: "もう一度試す",
++      }));
++    }
++    return;
++  }
++
++  const groups = scheduleGroup.value;
++  const query = searchValue(scheduleSearch.value);
++  const channels = new Map(data.channels.map((channel) => [channel.id, channel]));
++  const matches = data.streams.filter((stream) => {
++    const channel = channels.get(stream.channelId);
++    if (groups && groups !== channel?.group) return false;
++    return !query || searchValue(stream.title).includes(query) || searchValue(channel?.name).includes(query);
++  });
++
++  for (const key of Object.keys(statusLabels)) {
++    byId("count-" + key).textContent = matches.filter((stream) => stream.status === key).length;
++  }
++
++  const visible = matches.filter((stream) => stream.status === status);
++  visible.sort((left, right) => {
++    const leftDate = validDate(left.startAt);
++    const rightDate = validDate(right.startAt);
++    if (!leftDate || !rightDate) return Number(!leftDate) - Number(!rightDate);
++    return status === "past" ? rightDate - leftDate : leftDate - rightDate;
++  });
++
++  if (visible.length) {
++    schedulePanel.replaceChildren(...renderStreams(visible, channels));
++  } else if (groups || query) {
++    schedulePanel.replaceChildren(stateCard("条件に一致する配信はありません", "", {
++      action: () => {
++        scheduleGroup.value = "";
++        scheduleSearch.value = "";
++        renderSchedule();
++        scheduleSearch.focus();
++      },
++      actionLabel: "絞り込みを解除",
++    }));
++  } else if (data.warnings?.length || error) {
++    schedulePanel.replaceChildren(stateCard("この区分の配信情報はありません", "取得できた範囲の情報を表示しています。"));
++  } else {
++    schedulePanel.replaceChildren(stateCard(...emptyStates[status]));
++  }
++}
++
++function selectTab(tab) {
++  state.status = tab.dataset.status;
++  for (const candidate of tabs) {
++    candidate.setAttribute("aria-selected", String(candidate === tab));
++    candidate.tabIndex = candidate === tab ? 0 : -1;
++  }
++  schedulePanel.setAttribute("aria-labelledby", tab.id);
++  renderSchedule();
++}
++
++function rosterRow(channel) {
++  const row = element("li", "roster-row");
++  const avatar = element("div", "roster-avatar");
++  avatar.setAttribute("aria-hidden", "true");
++  media(avatar, channel.avatar, Array.from(channel.name)[0] || "▶");
++  const identity = element("div", "roster-identity");
++  const url = httpsUrl(channel.url);
++  const name = element(url ? "a" : "span", "roster-name", channel.name);
++  if (url) {
++    name.href = url;
++    name.target = "_blank";
++    name.rel = "noopener noreferrer";
++  }
++  identity.append(name, element("span", "roster-group", channel.group));
++
++  const label = element("label", "roster-switch-label");
++  const toggle = element("input", "roster-switch");
++  toggle.type = "checkbox";
++  toggle.setAttribute("role", "switch");
++  toggle.setAttribute("aria-label", channel.name + "の過去の配信を残す");
++  toggle.dataset.toggle = channel.id;
++  toggle.checked = channel.keepPast;
++  toggle.disabled = state.pendingChannels.has(channel.id);
++  toggle.addEventListener("change", () => {
++    mutateChannel(channel, "PATCH", { keepPast: toggle.checked }, "過去の配信の設定を保存しました。", "toggle");
++  });
++  label.append(toggle, element("span", "", "過去の配信を残す"));
++  row.append(avatar, identity, label);
++
++  if (channel.custom) {
++    const remove = element("button", "button remove-button", "削除");
++    remove.type = "button";
++    remove.dataset.remove = channel.id;
++    remove.disabled = state.pendingChannels.has(channel.id);
++    remove.setAttribute("aria-label", channel.name + "を削除");
++    remove.addEventListener("click", () => {
++      if (window.confirm(channel.name + "を一覧から削除しますか？")) {
++        mutateChannel(channel, "DELETE", undefined, "チャンネルを削除しました。", "remove");
++      }
++    });
++    row.append(remove);
++  }
++  return row;
++}
++
++function renderRoster(focusAfter) {
++  const list = byId("roster-list");
++  const query = searchValue(rosterSearch.value);
++  const group = rosterGroup.value;
++  const current = document.activeElement?.dataset;
++  const focus = focusAfter ?? (current?.toggle ? ["toggle", current.toggle] : current?.remove ? ["remove", current.remove] : null);
++  const channels = (state.data?.channels ?? []).filter((channel) => {
++    if (group && channel.group !== group) return false;
++    if (retainedFilter.checked && !channel.keepPast) return false;
++    return !query || searchValue(channel.name).includes(query);
++  });
++  list.replaceChildren();
++  if (channels.length) {
++    list.append(...channels.map(rosterRow));
++  } else {
++    const text = state.loading && !state.data ? "チャンネル情報を取得中…" : "表示できるチャンネルはありません。";
++    list.append(element("li", "roster-empty", text));
++  }
++  if (focus) {
++    const target = [...list.querySelectorAll('[data-' + focus[0] + ']')].find((control) => control.dataset[focus[0]] === focus[1]);
++    if (target && !target.disabled) target.focus({ preventScroll: true });
++    else if (focusAfter) rosterSearch.focus({ preventScroll: true });
++  }
++}
++
++async function mutateChannel(channel, method, body, success, focusTarget) {
++  const message = byId("settings-message");
++  state.pendingChannels.add(channel.id);
++  setMessage(message);
++  const row = [...byId("roster-list").children].find((candidate) => {
++    return candidate.querySelector(".roster-switch")?.dataset.toggle === channel.id;
++  });
++  row?.querySelectorAll("input, button").forEach((control) => {
++    control.disabled = true;
++  });
++
++  try {
++    await request("/api/channels/" + encodeURIComponent(channel.id), {
++      method,
++      ...(body && { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
++    });
++    if (method === "DELETE") {
++      state.data.channels = state.data.channels.filter(({ id }) => id !== channel.id);
++      state.data.streams = state.data.streams.filter(({ channelId }) => channelId !== channel.id);
++    } else {
++      const current = state.data.channels.find(({ id }) => id === channel.id);
++      if (current) current.keepPast = body.keepPast;
++    }
++    setMessage(message, success);
++    await loadSchedule();
++  } catch (error) {
++    setMessage(message, error.message, "error");
++  } finally {
++    state.pendingChannels.delete(channel.id);
++    if (dialog.open) renderRoster([focusTarget, channel.id]);
++  }
++}
++
++for (const tab of tabs) {
++  tab.addEventListener("click", () => selectTab(tab));
++  tab.addEventListener("keydown", (event) => {
++    const current = tabs.indexOf(tab);
++    const indices = {
++      ArrowLeft: (current - 1 + tabs.length) % tabs.length,
++      ArrowRight: (current + 1) % tabs.length,
++      Home: 0,
++      End: tabs.length - 1,
++    };
++    if (!(event.key in indices)) return;
++    event.preventDefault();
++    const next = tabs[indices[event.key]];
++    selectTab(next);
++    next.focus();
++  });
++}
++for (const button of document.querySelectorAll("[data-open-settings]")) {
++  button.addEventListener("click", () => {
++    setMessage(byId("settings-message"));
++    renderRoster();
++    dialog.showModal();
++    rosterSearch.focus();
++  });
++}
++
++refreshButton.addEventListener("click", () => loadSchedule({ refresh: true }));
++scheduleSearch.addEventListener("input", renderSchedule);
++scheduleGroup.addEventListener("change", renderSchedule);
++rosterSearch.addEventListener("input", () => renderRoster());
++rosterGroup.addEventListener("change", () => renderRoster());
++retainedFilter.addEventListener("change", () => renderRoster());
++
++form.addEventListener("submit", async (event) => {
++  event.preventDefault();
++  const button = form.querySelector("button[type='submit']");
++  const message = byId("add-message");
++  const value = channelUrl.value.trim();
++  setMessage(message);
++  channelUrl.disabled = true;
++  button.disabled = true;
++  button.textContent = "確認中…";
++  try {
++    await request("/api/channels", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ url: value }),
++    });
++    form.reset();
++    setMessage(message, "チャンネルを追加しました。");
++    await loadSchedule();
++  } catch (error) {
++    setMessage(message, error.message, "error");
++  } finally {
++    channelUrl.disabled = false;
++    button.disabled = false;
++    button.textContent = "チャンネルを追加";
++  }
++});
++
++updateDate();
++loadSchedule();
++window.setInterval(() => {
++  updateDate();
++  if (!document.hidden && !state.loading && !dialog.open) loadSchedule();
++}, 90_000);
+diff --git a/public/index.html b/public/index.html
+new file mode 100644
+index 0000000..8da917b
+--- /dev/null
++++ b/public/index.html
+@@ -0,0 +1,136 @@
++<!doctype html>
++<html lang="ja">
++<head>
++  <meta charset="utf-8">
++  <meta name="viewport" content="width=device-width, initial-scale=1">
++  <meta name="theme-color" content="#f8f8f2">
++  <meta name="description" content="ホロライブと登録したYouTubeチャンネルのライブ配信スケジュール。">
++  <title>配信日和｜YouTube 配信スケジュール</title>
++  <link rel="stylesheet" href="/styles.css">
++  <script type="module" src="/app.js"></script>
++</head>
++<body>
++  <header class="site-header">
++    <div class="shell header-inner">
++      <a class="brand" href="/" aria-label="配信日和 ホーム">
++        <span class="brand-mark" aria-hidden="true"><span></span></span>
++        <span>配信日和</span>
++      </a>
++      <button class="button secondary top-settings" type="button" data-open-settings>
++        <span class="settings-icon" aria-hidden="true">⚙︎</span> チャンネル設定
++      </button>
++    </div>
++  </header>
++
++  <main class="shell">
++    <section class="hero" aria-labelledby="page-title">
++      <div class="hero-content">
++        <p class="hero-label"><span class="hero-signal" aria-hidden="true"></span>YouTube ライブ配信</p>
++        <h1 id="page-title">配信スケジュール</h1>
++        <p class="hero-description">ホロライブと登録したチャンネルの配信をまとめてチェック。</p>
++      </div>
++      <div class="hero-date">
++        <span class="hero-date-label">今日の日付 <span>JST</span></span>
++        <time id="today-date">—</time>
++      </div>
++    </section>
++
++    <div class="dashboard">
++      <section class="schedule" aria-labelledby="schedule-heading">
++        <div class="section-heading">
++          <div>
++            <h2 id="schedule-heading">配信一覧</h2>
++            <p id="sync-status" class="sync-status" aria-live="polite">配信情報を取得中</p>
++          </div>
++          <button class="button secondary" id="refresh" type="button">
++            <span class="refresh-icon" aria-hidden="true">↻</span> 更新
++          </button>
++        </div>
++
++        <div id="schedule-alerts" class="schedule-alerts" aria-live="polite" hidden></div>
++
++        <div class="schedule-controls">
++          <div class="tabs" role="tablist" aria-label="配信の状態">
++            <button class="tab" type="button" id="tab-live" role="tab" aria-selected="true" aria-controls="schedule-panel" data-status="live">
++              <span class="live-dot" aria-hidden="true"></span>配信中<span class="tab-count" id="count-live">—</span>
++            </button>
++            <button class="tab" type="button" id="tab-upcoming" role="tab" aria-selected="false" aria-controls="schedule-panel" tabindex="-1" data-status="upcoming">
++              今後の配信<span class="tab-count" id="count-upcoming">—</span>
++            </button>
++            <button class="tab" type="button" id="tab-past" role="tab" aria-selected="false" aria-controls="schedule-panel" tabindex="-1" data-status="past">
++              過去の配信<span class="tab-count" id="count-past">—</span>
++            </button>
++          </div>
++
++          <div class="filters">
++            <label class="search-field">
++              <span class="search-icon" aria-hidden="true"></span>
++              <span class="sr-only">配信タイトル・チャンネル名で検索</span>
++              <input id="schedule-search" type="search" placeholder="タイトル・チャンネル名">
++            </label>
++            <label class="select-field">
++              <span class="sr-only">所属グループ</span>
++              <select id="schedule-group"><option value="">すべてのグループ</option></select>
++            </label>
++          </div>
++        </div>
++
++        <div id="schedule-panel" class="schedule-panel" role="tabpanel" aria-labelledby="tab-live" tabindex="0" aria-busy="true"></div>
++      </section>
++
++      <aside class="sidebar" aria-label="チャンネル管理">
++        <section class="sidebar-card" aria-labelledby="add-heading">
++          <div class="card-icon card-icon-add" aria-hidden="true">＋</div>
++          <h2 id="add-heading">チャンネルを追加</h2>
++          <p>好きな YouTube チャンネルの配信を一覧に追加できます。</p>
++          <form id="add-channel-form">
++            <label for="channel-url">YouTube チャンネル URL</label>
++            <input id="channel-url" name="url" type="url" placeholder="https://www.youtube.com/@…" required>
++            <button class="button primary add-button" type="submit">チャンネルを追加</button>
++            <p id="add-message" class="form-message" role="status" hidden></p>
++          </form>
++        </section>
++
++        <section class="sidebar-card" aria-labelledby="settings-heading">
++          <div class="card-icon" aria-hidden="true"><span class="settings-icon">⚙︎</span></div>
++          <h2 id="settings-heading">チャンネル設定</h2>
++          <p>過去の配信は終了から24時間で非表示になります。残したいチャンネルを選べます。</p>
++          <div class="sidebar-meta"><span>登録チャンネル</span><strong id="channel-count">—</strong></div>
++          <button class="button secondary settings-button" type="button" data-open-settings>チャンネルを管理 <span aria-hidden="true">↗</span></button>
++        </section>
++      </aside>
++    </div>
++  </main>
++
++  <footer class="shell site-footer">
++    <span>配信日和</span>
++    <span>すべての時刻は日本時間（JST）です。</span>
++  </footer>
++
++  <dialog id="settings-dialog" aria-labelledby="dialog-heading" aria-describedby="dialog-description">
++    <div class="dialog-header">
++      <div>
++        <h2 id="dialog-heading">チャンネル設定</h2>
++        <p id="dialog-description">「過去の配信を残す」を有効にすると、このチャンネルの配信は24時間経過後も表示されます。</p>
++      </div>
++      <form method="dialog"><button class="button icon-button" aria-label="閉じる" type="submit">×</button></form>
++    </div>
++    <div class="dialog-content">
++      <div class="filters dialog-filters">
++        <label class="search-field">
++          <span class="search-icon" aria-hidden="true"></span>
++          <span class="sr-only">チャンネル名で検索</span>
++          <input id="roster-search" type="search" placeholder="チャンネル名で検索">
++        </label>
++        <label class="select-field">
++          <span class="sr-only">所属グループ</span>
++          <select id="roster-group"><option value="">すべてのグループ</option></select>
++        </label>
++      </div>
++      <label class="retained-filter"><input id="roster-retained" type="checkbox">過去の配信を残すチャンネルのみ表示</label>
++      <p id="settings-message" class="form-message" role="status" hidden></p>
++      <ul id="roster-list" class="roster-list" aria-label="登録チャンネル"></ul>
++    </div>
++  </dialog>
++</body>
++</html>
+diff --git a/public/styles.css b/public/styles.css
+new file mode 100644
+index 0000000..27a07e4
+--- /dev/null
++++ b/public/styles.css
+@@ -0,0 +1,261 @@
++:root {
++  color-scheme: light;
++  --paper: #f8f8f2;
++  --surface: #fff;
++  --ink: #202a25;
++  --muted: #596760;
++  --border: #dce3db;
++  --green: #235641;
++  --mint: #e7f1e8;
++  --red: #aa3742;
++  --red-bg: #fbecee;
++  --focus: #547b66;
++  --radius: 18px;
++  font-family: "Hiragino Sans", "Yu Gothic", "Meiryo", system-ui, sans-serif;
++  color: var(--ink);
++  background: var(--paper);
++  font-synthesis: none;
++  -webkit-text-size-adjust: 100%;
++}
++
++*, *::before, *::after { box-sizing: border-box; }
++[hidden] { display: none !important; }
++body { margin: 0; min-width: 290px; }
++button, input, select { font: inherit; }
++a { color: inherit; }
++button, select { cursor: pointer; }
++:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
++button:disabled, input:disabled { cursor: wait; opacity: .62; }
++h1, h2, p { margin: 0; }
++
++.shell { width: min(1224px, calc(100% - 96px)); margin-inline: auto; }
++.site-header { border-bottom: 1px solid #e6eae2; }
++.header-inner { min-height: 75px; display: flex; align-items: center; justify-content: space-between; gap: 15px; }
++.brand { display: inline-flex; align-items: center; gap: 12px; text-decoration: none; font-size: 1.13rem; font-weight: 800; letter-spacing: .04em; }
++.brand-mark { display: grid; place-items: center; width: 36px; height: 36px; background: var(--green); border-radius: 11px; }
++.brand-mark > span { width: 20px; height: 15px; display: grid; place-items: center; border: 1.5px solid #edf7e6; border-radius: 4px; }
++.brand-mark > span::before { content: ""; margin-left: 2px; border-left: 5px solid #edf7e6; border-block: 3.5px solid transparent; }
++
++.button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 41px; padding: 8px 15px; border: 1px solid transparent; border-radius: 10px; font-size: .84rem; line-height: 1.5; font-weight: 700; white-space: nowrap; transition: background .15s, color .15s, border-color .15s; }
++.secondary { background: var(--surface); color: var(--ink); border-color: var(--border); }
++.secondary:hover:not(:disabled) { background: var(--mint); border-color: #bed2c3; }
++.primary { background: var(--green); color: white; }
++.primary:hover:not(:disabled) { background: #173f30; }
++.settings-icon { font-family: system-ui, sans-serif; font-size: 1.18em; line-height: 1; }
++.refresh-icon { font-size: 1.25em; line-height: 1; }
++#refresh[aria-busy="true"] .refresh-icon { animation: spin 1s linear infinite; }
++@keyframes spin { to { transform: rotate(360deg); } }
++
++.hero {
++  position: relative;
++  isolation: isolate;
++  display: flex;
++  justify-content: space-between;
++  align-items: flex-end;
++  overflow: hidden;
++  margin-block: 35px 42px;
++  padding: clamp(28px, 5vw, 62px);
++  min-height: 244px;
++  border-radius: 24px;
++  background: linear-gradient(113deg, #19392d 14%, #244e3b 64%, #335a44);
++  color: #f8fbf2;
++}
++.hero::before {
++  content: "";
++  z-index: -1;
++  position: absolute;
++  inset: 0;
++  background: repeating-radial-gradient(ellipse 250px 127px at 80% 7%, transparent 0 20px, #c8e5bf24 21px 22px, transparent 23px 33px);
++  mask-image: linear-gradient(105deg, transparent 30%, #000 85%);
++}
++.hero-content { display: grid; justify-items: start; gap: 18px; }
++.hero-label { color: #dfecd8; display: inline-flex; gap: 9px; align-items: center; font-size: .83rem; font-weight: 700; letter-spacing: .07em; }
++.hero-signal { display: inline-block; width: 8px; height: 8px; background: #b1d9a6; border-radius: 50%; box-shadow: 0 0 0 4px #b1d9a625; }
++.hero h1 { font-size: clamp(2rem, 5vw, 3.4rem); line-height: 1.15; letter-spacing: .015em; font-weight: 850; }
++.hero-description { color: #e1ebdd; font-size: clamp(.83rem, 1.45vw, 1rem); line-height: 1.8; }
++.hero-date { display: grid; align-content: center; flex-shrink: 0; gap: 7px; padding: 15px 19px; border: 1px solid #e3efd766; border-radius: 14px; background: #213f31cf; font-variant-numeric: tabular-nums; }
++.hero-date-label { display: flex; justify-content: space-between; align-items: center; gap: 20px; font-size: .74rem; color: #e1ebdd; }
++.hero-date-label > span { border: 1px solid #d0e1c875; border-radius: 5px; padding: 1px 4px; font-size: .64rem; }
++.hero-date time { font-weight: 750; font-size: 1.25rem; white-space: nowrap; }
++
++.dashboard { display: grid; grid-template-columns: minmax(0, 1fr) minmax(250px, 292px); align-items: start; gap: 28px; }
++.schedule { min-width: 0; }
++.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 17px; }
++.section-heading h2 { font-size: 1.44rem; font-weight: 850; letter-spacing: .015em; }
++.sync-status { margin-top: 4px; color: var(--muted); font-size: .78rem; line-height: 1.6; font-variant-numeric: tabular-nums; }
++.schedule-alerts { border: 1px solid #ded6b8; border-radius: 12px; padding: 12px 15px; margin-bottom: 14px; background: #fbf6e7; color: #594924; line-height: 1.65; font-size: .82rem; }
++.schedule-alerts ul { margin: 0; padding-left: 1.25em; }
++.schedule-alerts ul > li + li { margin-top: 4px; }
++.schedule-controls { display: grid; gap: 15px; margin-bottom: 16px; }
++
++.tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 5px; border: 1px solid var(--border); border-radius: 13px; background: #eef2eb; }
++.tab { min-width: 0; min-height: 43px; padding: 7px 5px; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 7px; color: #46534b; font-size: .9rem; font-weight: 700; background: transparent; border: 1px solid transparent; border-radius: 9px; }
++.tab:hover { color: var(--ink); background: #ffffff9e; }
++.tab[aria-selected="true"] { color: #174331; background: white; border-color: #d9e2d9; box-shadow: 0 1px 2px #253d2a0a; }
++.tab-count { min-width: 1.6em; padding: 2px 5px; border-radius: 9px; background: #e0e8e0; font-size: .71rem; line-height: 1.12; font-variant-numeric: tabular-nums; }
++.tab[aria-selected="true"] .tab-count { background: var(--mint); }
++.live-dot { display: inline-block; flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%; background: #c64d57; }
++
++.filters { display: flex; gap: 10px; }
++.search-field {
++  display: flex;
++  align-items: center;
++  gap: 11px;
++  min-width: 0;
++  flex: 1;
++  padding-left: 13px;
++  background: var(--surface);
++  border: 1px solid var(--border);
++  border-radius: 10px;
++}
++.search-field:focus-within { outline: 2px solid var(--focus); outline-offset: 1px; }
++.search-icon { position: relative; flex-shrink: 0; width: 12px; height: 12px; margin-right: 3px; margin-top: -2px; border: 1.65px solid #617069; border-radius: 50%; }
++.search-icon::after { content: ""; position: absolute; width: 5px; height: 1.65px; border-radius: 1px; background: #617069; transform: rotate(45deg); right: -4px; bottom: -2px; }
++.search-field input, .select-field select, #channel-url { width: 100%; min-width: 0; height: 42px; padding: 8px 12px; background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 10px; font-size: .83rem; }
++.search-field input { border: 0; outline: 0; padding-left: 0; border-radius: 0 10px 10px 0; }
++.search-field input::placeholder, #channel-url::placeholder { color: #65726a; opacity: 1; }
++.select-field { min-width: 0; max-width: 45%; }
++.select-field select { width: auto; max-width: 100%; padding-right: 8px; }
++
++.schedule-panel { border-radius: var(--radius); }
++.state-card { display: grid; place-items: center; align-content: center; gap: 12px; min-height: 250px; padding: 25px 20px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); text-align: center; }
++.state-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 13px; background: var(--mint); color: var(--green); font-size: 1.2rem; font-weight: 800; }
++.state-icon .radio-icon { position: relative; display: block; width: 20px; height: 20px; border: 2px solid #779985; border-top-color: transparent; border-bottom-color: transparent; border-radius: 50%; }
++.state-icon .radio-icon::after { content: ""; position: absolute; inset: 4px; background: var(--green); border-radius: 50%; }
++.state-card h3 { margin: 0; font-size: 1rem; font-weight: 800; }
++.state-card p { color: var(--muted); font-size: .85rem; line-height: 1.65; }
++.spinner { width: 19px; height: 19px; border: 2px solid #bad1be; border-top-color: var(--green); border-radius: 50%; animation: spin .8s linear infinite; }
++
++.stream-group + .stream-group { margin-top: 20px; }
++.stream-day { margin: 0 0 9px; font-size: .86rem; font-weight: 800; color: #4a5e53; }
++.stream-list { display: grid; gap: 9px; }
++.stream {
++  display: grid;
++  grid-template-columns: 126px minmax(0, 1fr) auto;
++  gap: 16px;
++  align-items: center;
++  padding: 12px;
++  border: 1px solid var(--border);
++  border-radius: 13px;
++  background: var(--surface);
++  color: inherit;
++  text-decoration: none;
++  transition: border-color .15s, box-shadow .15s;
++}
++a.stream:hover { border-color: #82a690; box-shadow: 0 2px 10px #27453110; }
++.stream-thumb { display: grid; place-items: center; width: 100%; aspect-ratio: 16 / 9; border-radius: 8px; background: #e5ede4; color: #557363; overflow: hidden; }
++.stream-thumb > img { width: 100%; height: 100%; object-fit: cover; }
++.stream-thumb > span { font-size: 1.15rem; }
++.stream-body { min-width: 0; }
++.stream-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; color: var(--muted); font-size: .76rem; }
++.status-badge { padding: 2px 6px; border-radius: 6px; font-weight: 750; line-height: 1.45; background: var(--mint); color: var(--green); }
++.status-badge[data-status="live"] { color: var(--red); background: var(--red-bg); }
++.status-badge[data-status="past"] { background: #edf0ee; color: #515e57; }
++.stream-title { margin: 5px 0 3px; display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: var(--ink); font-size: .92rem; font-weight: 800; line-height: 1.55; overflow-wrap: anywhere; }
++.stream-channel { color: var(--muted); font-size: .78rem; overflow-wrap: anywhere; }
++.stream-arrow { padding: 4px; font-size: 1.1rem; color: #4b6958; }
++
++.sidebar { display: grid; gap: 15px; }
++.sidebar-card { background: var(--surface); padding: 19px; border: 1px solid var(--border); border-radius: var(--radius); }
++.card-icon { display: grid; place-items: center; margin-bottom: 13px; width: 35px; height: 35px; border-radius: 9px; background: var(--mint); color: var(--green); font-size: 1.05rem; font-weight: 750; }
++.card-icon-add { font-size: 1.25rem; }
++.sidebar-card h2 { font-size: 1.05rem; font-weight: 820; }
++.sidebar-card p { margin-top: 7px; color: var(--muted); font-size: .83rem; line-height: 1.7; }
++#add-channel-form { display: grid; gap: 8px; margin-top: 15px; }
++#add-channel-form label { font-size: .75rem; font-weight: 700; }
++#channel-url { font-size: .8rem; }
++.add-button, .settings-button { width: 100%; }
++.settings-button { justify-content: space-between; }
++.sidebar-meta { display: flex; justify-content: space-between; margin: 14px 0 11px; border-top: 1px solid #e8ece6; padding-top: 12px; color: var(--muted); font-size: .8rem; }
++.sidebar-meta strong { color: var(--ink); font-variant-numeric: tabular-nums; }
++.form-message { font-size: .82rem; line-height: 1.65; overflow-wrap: anywhere; }
++.form-message[data-kind="error"] { color: var(--red); }
++.form-message[data-kind="success"] { color: var(--green); }
++
++.site-footer { display: flex; justify-content: space-between; gap: 10px 20px; flex-wrap: wrap; border-top: 1px solid var(--border); margin-top: 44px; padding-block: 19px 23px; color: var(--muted); font-size: .77rem; }
++.site-footer span:first-child { color: var(--ink); font-weight: 800; }
++
++dialog {
++  width: min(620px, calc(100% - 28px));
++  max-height: min(740px, calc(100% - 30px));
++  padding: 0;
++  border: 1px solid var(--border);
++  border-radius: 18px;
++  background: var(--surface);
++  color: inherit;
++  box-shadow: 0 12px 60px #182a2735;
++}
++dialog[open] { display: flex; flex-direction: column; }
++dialog::backdrop { background: #14282066; }
++.dialog-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; padding: 20px 22px 15px; border-bottom: 1px solid var(--border); }
++.dialog-header h2 { font-size: 1.3rem; font-weight: 820; }
++.dialog-header p { margin-top: 6px; color: var(--muted); font-size: .82rem; line-height: 1.65; }
++.icon-button { min-width: 37px; min-height: 37px; padding: 0; border-color: var(--border); background: white; color: var(--ink); font-size: 1.25rem; }
++.icon-button:hover { background: var(--mint); }
++.dialog-content { padding: 15px 22px 22px; overflow: auto; }
++.dialog-filters { margin-bottom: 12px; }
++.retained-filter { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: .8rem; }
++.retained-filter input { accent-color: var(--green); width: 16px; height: 16px; }
++#settings-message { margin-top: 9px; }
++.roster-list { margin: 12px 0 0; padding: 0; list-style: none; }
++.roster-list li + li { border-top: 1px solid #e8ece6; }
++.roster-row { display: flex; align-items: center; gap: 11px; min-height: 57px; padding: 8px 2px; }
++.roster-avatar { display: grid; place-items: center; flex: 0 0 34px; width: 34px; height: 34px; overflow: hidden; border-radius: 50%; color: var(--green); background: var(--mint); font-size: .82rem; font-weight: 800; }
++.roster-avatar img { width: 100%; height: 100%; object-fit: cover; }
++.roster-identity { flex: 1; min-width: 0; overflow-wrap: anywhere; }
++.roster-name { font-size: .9rem; font-weight: 750; text-decoration: none; }
++.roster-name:hover { text-decoration: underline; }
++.roster-group { display: block; margin-top: 3px; color: var(--muted); font-size: .73rem; }
++.roster-switch-label { display: flex; align-items: center; gap: 7px; font-size: .76rem; color: #334239; cursor: pointer; }
++.roster-switch { appearance: none; position: relative; width: 35px; height: 20px; margin: 0; border: 1px solid #8d9c92; border-radius: 10px; background: #e8ede8; cursor: pointer; }
++.roster-switch::after { position: absolute; content: ""; left: 2px; top: 2px; width: 14px; height: 14px; border-radius: 50%; background: #68796e; transition: transform .15s; }
++.roster-switch:checked { background: var(--green); border-color: var(--green); }
++.roster-switch:checked::after { transform: translateX(15px); background: #fff; }
++.remove-button { min-height: 30px; padding: 3px 7px; border-color: var(--border); background: white; color: var(--red); font-size: .72rem; }
++.remove-button:hover:not(:disabled) { background: var(--red-bg); }
++.roster-empty { padding: 18px 0; color: var(--muted); font-size: .83rem; }
++
++.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
++
++@media (max-width: 950px) {
++  .shell { width: calc(100% - 48px); }
++  .dashboard { gap: 17px; grid-template-columns: minmax(0, 1fr) minmax(220px, 250px); }
++  .sidebar-card { padding: 15px; }
++}
++
++@media (max-width: 720px) {
++  .shell { width: calc(100% - 34px); }
++  .header-inner { min-height: 62px; }
++  .hero { min-height: 0; margin-block: 20px 28px; padding: 26px 22px; border-radius: 19px; align-items: flex-start; gap: 18px; }
++  .hero-content { gap: 12px; }
++  .hero-date { padding: 9px 11px; gap: 4px; }
++  .hero-date-label { gap: 8px; font-size: .65rem; }
++  .hero-date time { font-size: .95rem; }
++  .dashboard { grid-template-columns: minmax(0, 1fr); gap: 23px; }
++  .sidebar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
++}
++
++@media (max-width: 475px) {
++  .shell { width: calc(100% - 26px); }
++  .hero { flex-direction: column; }
++  .hero-date { display: flex; align-items: center; gap: 10px; }
++  .hero-date-label > span { display: none; }
++  .hero-date time::after { content: " JST"; font-size: .68rem; color: #e1ebdd; }
++  .sidebar { grid-template-columns: minmax(0, 1fr); }
++  .tabs { gap: 2px; }
++  .tab { gap: 4px; min-height: 37px; font-size: .76rem; }
++  .filters { gap: 6px; }
++  .search-field { padding-left: 10px; gap: 7px; }
++  .search-field input, .select-field select { font-size: .75rem; }
++  .stream { grid-template-columns: 88px minmax(0, 1fr); padding: 8px; gap: 9px; }
++  .stream-arrow { display: none; }
++  .stream-title { font-size: .82rem; }
++  .stream-meta, .stream-channel { font-size: .72rem; }
++  .dialog-header, .dialog-content { padding-inline: 14px; }
++  .roster-row { gap: 6px; }
++  .roster-switch-label > span { width: 1px; height: 1px; position: absolute; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
++}
++
++@media (prefers-reduced-motion: reduce) {
++  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
++}
+diff --git a/src/data/hololive-roster.mjs b/src/data/hololive-roster.mjs
+new file mode 100644
+index 0000000..d53d37f
+--- /dev/null
++++ b/src/data/hololive-roster.mjs
+@@ -0,0 +1,84 @@
++// Official roster: https://hololive.hololivepro.com/talents/
++// Cross-checked against the August 2026 official roster mirror and November 2026 channel lists.
++// https://github.com/prayzero/hololive-schedule/blob/main/public/data/talents.json
++// https://github.com/seangcs27/dossier/blob/master/scripts/lib/holodori-outside.mjs
++// https://github.com/physicsdog0505/HoloViewer/blob/main/data/search/member_aliases.v1.json
++// Each row is a YouTube channel, with alternate names used by the official schedule.
++export const rosterGroups = {
++  "ホロライブ JP": [
++    ["UCp6993wxpyDPHUpavwDFqgg","ときのそら",["Tokino Sora","Sora","そら","そらちゃん"],"https://hololive.hololivepro.com/wp-content/uploads/2021/05/tokino_sora_thumb.png"],
++    ["UCDqI2jOz0weumE8s7paEk6g","ロボ子さん",["Robocosan","Roboco-san","Roboco","ロボ子"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Robocosan_list_thumb.png"],
++    ["UC-hM6YJuNYVAmUWxeIr9FeA","さくらみこ",["Sakura Miko","Miko","Mikochi","みこ","みこち"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Sakura-Miko_list_thumb.png"],
++    ["UC5CwaMl1eIgY8h02uZw7u8A","星街すいせい",["Hoshimachi Suisei","Suisei","Suichan","Sui-chan","すいせい","すいちゃん"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Hoshimachi-Suisei_list_thumb.png"],
++    ["UC0TXe_LYZ4scaW2XMyi5_kw","AZKi",["Azki","あずき"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/AZKi_list_thumb.png"],
++    ["UCFTLzh12_nrtzqBPsTCqenA","アキ・ローゼンタール",["Aki Rosenthal","Aki","Akirose","アキロゼ","アキ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Aki-Rosenthal_list_thumb.png"],
++    ["UC1CfXB_kRs3C-zaeTG3oGyg","赤井はあと",["Akai Haato","Haato","Haachama","はあと","はあちゃま"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Akai-Haato_list_thumb.png"],
++    ["UCdn5BQ06XqgXoAxIhbqw5Rg","白上フブキ",["Shirakami Fubuki","Fubuki","FBK","フブキ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Shirakami-Fubuki_list_thumb.png"],
++    ["UCQ0UDLQCjY0rmuxCDE38FGg","夏色まつり",["Natsuiro Matsuri","Matsuri","まつり","まつりちゃん"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Natsuiro-Matsuri_list_thumb.png"],
++    ["UC7fk0CB07ly8oSl0aqKkqFg","百鬼あやめ",["Nakiri Ayame","Ayame","Ojou","お嬢","あやめ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Nakiri-Ayame_list_thumb.png"],
++    ["UC1suqwovbL1kzsoaZgFZLKg","癒月ちょこ",["Yuzuki Choco","Choco","Choco-sensei","ちょこ","ちょこ先生"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Yuzuki-Choco_list_thumb.png"],
++    ["UCvzGlP9oQwU--Y0r9id_jnA","大空スバル",["Oozora Subaru","Subaru","Suba","スバル"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Oozora-Subaru_list_thumb.png"],
++    ["UCp-5t9SrOQwXMU7iIjQfARg","大神ミオ",["Ookami Mio","Mio","Mio-sha","ミオ","ミオしゃ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Ookami-Mio_thumb.png"],
++    ["UCvaTdHTWBGv3MKj3KVqJVCw","猫又おかゆ",["Nekomata Okayu","Okayu","おかゆ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Nekomata-Okayu_list_thumb.png"],
++    ["UChAnqc_AY5_I3Px5dig3X1Q","戌神ころね",["Inugami Korone","Korone","Koro-san","ころね","ころさん"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Inugami-Korone_list_thumb.png"],
++    ["UC1DCedRgGHBdm81E1llLhOQ","兎田ぺこら",["Usada Pekora","Pekora","Peko","ぺこら","ぺこ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Usada-Pekora_list_thumb.png"],
++    ["UCvInZx9h3jC2JzsIzoOebWg","不知火フレア",["Shiranui Flare","Flare","Fuu-tan","フレア","ふーたん"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Shiranui-Flare_list_thumb.png"],
++    ["UCdyqAaZDKHXg4Ahi7VENThQ","白銀ノエル",["Shirogane Noel","Noel","Danchou","ノエル","団長"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Shirogane-Noel_list_thumb.png"],
++    ["UCCzUftO8KOVkV4wQG1vkUvg","宝鐘マリン",["Houshou Marine","Marine","Senchou","マリン","船長","Hosho Marine"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Houshou-Marine_list_thumb.png"],
++    ["UCqm3BQLlJfvkTsX_hvm0UmA","角巻わため",["Tsunomaki Watame","Watame","わため"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Tsunomaki-Watame_list_thumb.png"],
++    ["UC1uv2Oq6kNxgATlCiez59hw","常闇トワ",["Tokoyami Towa","Towa","Towa-sama","トワ","トワ様"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Tokoyami-Towa_list_thumb.png"],
++    ["UCa9Y57gfeY0Zro_noHRVrnw","姫森ルーナ",["Himemori Luna","Luna","Luna-hime","ルーナ","ルーナ姫"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Himemori-Luna_list_thumb.png"],
++    ["UCFKOVgVbGmX65RxO3EtH3iw","雪花ラミィ",["Yukihana Lamy","Lamy","ラミィ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Yukihana-Lamy_list_thumb.png"],
++    ["UCAWSyEs_Io8MtpY3m-zqILA","桃鈴ねね",["Momosuzu Nene","Nene","Nenechi","ねね","ねねち"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Momosuzu-Nene_list_thumb.png"],
++    ["UCUKD-uaobj9jiqB-VXt71mA","獅白ぼたん",["Shishiro Botan","Botan","Shishiron","ぼたん","ししろん"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Shishiro-Botan_list_thumb.png"],
++    ["UCK9V2B22uJYu3N7eR_BT9QA","尾丸ポルカ",["Omaru Polka","Polka","PolPol","ポルカ","ポルポル"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Omaru-Polka_list_thumb.png"],
++    ["UCENwRMx5Yh42zWpzURebzTw","ラプラス・ダークネス",["La+ Darknesss","Laplus Darknesss","Laplus","La+","ラプラス","ラプ様"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/La-Darknesss_list_thumb.png"],
++    ["UCs9_O1tRPMQTHQ-N_L6FU2g","鷹嶺ルイ",["Takane Lui","Lui","Lui-nee","ルイ","ルイ姉"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Takane-Lui_list_thumb.png"],
++    ["UC6eWCld0KwmyHFbAqK3V-Rw","博衣こより",["Hakui Koyori","Koyori","Koyo","こより","こよ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Hakui-Koyori_list_thumb.png"],
++    ["UC_vMYWcDjmfdpH6r4TTn1MQ","風真いろは",["Kazama Iroha","Iroha","いろは","ござる"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Kazama-Iroha_list_thumb.png"],
++    ["UCIBY1ollUsauvVi4hW4cumw","沙花叉クロヱ",["Sakamata Chloe","Chloe","Sakamata","クロヱ","クロエ","沙花叉"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Sakamata-Chloe_list_thumb.png","affiliate"],
++    ["UC8eitCE9Z6EwUCs-VUi1blg","Achichi Mela",["Mela","メラ"],null],
++    ["UCy9mgxB8pn2C4aNK_MPthDQ","Sorashina Sopia",["Sopia","ソピア"],null],
++    ["UCROQtXcp2loQEmvpe5rhJzQ","Suzuna Tsuzuri",["Tsuzuri","つづり","ツヅリ"],null],
++    ["UCSjQDxud2HkAO2DVD3lwxmw","百灯キョーコ",["Hyakuto Kyoko","Kyoko","キョーコ"],null],
++  ],
++  "ホロライブ ID": [
++    ["UCOyYb1c43VlX9rc_lT6NKQw","Ayunda Risu",["アユンダ・リス","Risu","リス"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Ayunda-Risu_list_thumb.png"],
++    ["UCP0BspO_AMEe3aQqqpo89Dg","Moona Hoshinova",["ムーナ・ホシノヴァ","Moona","ムーナ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Moona-Hoshinova_list_thumb.png"],
++    ["UCAoy6rzhSf4ydcYjJw3WoVg","Airani Iofifteen",["アイラニ・イオフィフティーン","Iofi","Iofi15","イオフィ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Airani-Iofifteen_list_thumb.png"],
++    ["UCYz_5n-uDuChHtLo7My1HnQ","Kureiji Ollie",["クレイジー・オリー","Ollie","オリー"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Kureiji-Ollie_list_thumb.png"],
++    ["UC727SQYUvx5pDDGQpTICNWg","Anya Melfissa",["アーニャ・メルフィッサ","Anya","アーニャ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Anya-Melfissa_list_thumb.png"],
++    ["UChgTyjG-pdNvxxhdsXfHQ5Q","Pavolia Reine",["パヴォリア・レイネ","Reine","レイネ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Pavolia-Reine_list_thumb.png"],
++    ["UCTvHWSfBZgtxE4sILOaurIQ","Vestia Zeta",["ベスティア・ゼータ","Zeta","ゼータ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Vestia-Zeta_list_thumb.png"],
++    ["UCZLZ8Jjx_RN2CXloOmgTHVg","Kaela Kovalskia",["カエラ・コヴァルスキア","Kaela","カエラ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Kaela-Kovalskia_list_thumb.png"],
++    ["UCjLEmnpCNeisMxy134KPwWw","Kobo Kanaeru",["こぼ・かなえる","Kobo","こぼ","コボ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Kobo-Kanaeru_list_thumb.png"],
++  ],
++  "ホロライブ EN": [
++    ["UCL_qhgtOy0dy1Agp8vkySQg","Mori Calliope",["森カリオペ","Mori","Calliope","Calli","カリオペ","カリ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Mori-Calliope_list_thumb.png"],
++    ["UCHsx4Hqa-1ORjQTh9TYDhww","Takanashi Kiara",["小鳥遊キアラ","Kiara","Kiwawa","キアラ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Takanashi-Kiara_list_thumb.png"],
++    ["UCMwGHR0BTZuLsmjY_NT5Pwg","Ninomae Ina’nis",["一伊那尓栖","Ninomae Inanis","Ninomae Ina'nis","Ina'nis","Inanis","Ina","イナ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Ninomae-Inanis_list_thumb.png"],
++    ["UCyl1z3jo3XHR1riLFKG5UAg","Watson Amelia",["ワトソン・アメリア","Amelia","Ame","Watson","アメリア","アメ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Watson-Amelia_list_thumb.png","affiliate"],
++    ["UC8rcEBzJSleTkf_-agPM20g","IRyS",["Irys","Iris","アイリス"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/IRyS_list_thumb.png"],
++    ["UCmbs8T6MWqUHP1tIQvSgKrg","Ouro Kronii",["オーロ・クロニー","Kronii","Ouro","クロニー"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Ouro-Kronii_list_thumb.png"],
++    ["UCgmPnx-EEeOrZSg5Tiw7ZRQ","Hakos Baelz",["ハコス・ベールズ","Baelz","Bae","Hakos","ベールズ","ベー"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Hakos-Baelz_list_thumb.png"],
++    ["UCgnfPPb9JI3e9A4cXHnWbyg","Shiori Novella",["シオリ・ノヴェラ","Shiori","Novella","シオリ"],"https://hololive.hololivepro.com/wp-content/uploads/2021/07/Shiori-Novella_list_thumb.png"],
++    ["UC9p_lqQ0FEDz327Vgf5JwqA","Koseki Bijou",["古石ビジュー","Bijou","Biboo","Koseki","ビジュー"],"https://hololive.hololivepro.com/wp-content/uploads/2021/07/Koseki-Bijou_list_thumb.png"],
++    ["UC_sFNM0z0MWm9A6WlKPuMMg","Nerissa Ravencroft",["ネリッサ・レイヴンクロフト","Nerissa","Ravencroft","Rissa","ネリッサ"],"https://hololive.hololivepro.com/wp-content/uploads/2021/07/Nerissa-Ravencroft_list_thumb.png"],
++    ["UCt9H_RpQzhxzlyBxFqrdHqA","FUWAMOCO",["Fuwawa Abyssgard","Mococo Abyssgard","フワワ・アビスガード","モココ・アビスガード","フワモコ","Fuwawa","Mococo","フワワ","モココ"],"https://hololive.hololivepro.com/wp-content/uploads/2021/07/Fuwawa-Abyssgard_list_thumb.png"],
++    ["UCW5uhrG1eCBYditmhL0Ykjw","Elizabeth Rose Bloodflame",["エリザベス・ローズ・ブラッドフレイム","Elizabeth","ERB","Liz","Bloodflame","エリザベス"],"https://hololive.hololivepro.com/wp-content/uploads/2023/07/Elizabeth-Rose-Bloodflame_list_thumb.png"],
++    ["UCDHABijvPBnJm7F-KlNME3w","Gigi Murin",["ジジ・ムリン","Gigi","Murin","ジジ"],"https://hololive.hololivepro.com/wp-content/uploads/2023/07/Gigi-Murin_list_thumb.png"],
++    ["UCvN5h1ShZtc7nly3pezRayg","Cecilia Immergreen",["セシリア・イマーグリーン","Cecilia","Immergreen","セシリア"],"https://hololive.hololivepro.com/wp-content/uploads/2023/07/Cecilia-Immergreen_list_thumb.png"],
++    ["UCl69AEx4MdqMZH7Jtsm7Tig","Raora Panthera",["ラオーラ・パンテーラ","Raora","Panthera","ラオーラ"],"https://hololive.hololivepro.com/wp-content/uploads/2023/07/Raora-Panthera_list_thumb.png"],
++  ],
++  "hololive DEV_IS": [
++    ["UCWQtYtq9EOB4-I5P-3fh8lA","音乃瀬奏",["Otonose Kanade","Kanade","音乃瀬","かなで"],"https://hololive.hololivepro.com/wp-content/uploads/2023/09/Otonose-Kanade_list_thumb.png"],
++    ["UCtyWhCj3AqKh2dXctLkDtng","一条莉々華",["Ichijou Ririka","Ririka","りりか","莉々華"],"https://hololive.hololivepro.com/wp-content/uploads/2023/09/Ichijou-Ririka_list_thumb.png"],
++    ["UCdXAk5MpyLD8594lm_OvtGQ","儒烏風亭らでん",["Juufuutei Raden","Jufuutei Raden","Raden","らでん"],"https://hololive.hololivepro.com/wp-content/uploads/2023/09/Juufuutei-Raden_list_thumb.png"],
++    ["UC1iA6_NT4mtAcIII6ygrvCw","轟はじめ",["Todoroki Hajime","Hajime","はじめ","番長"],"https://hololive.hololivepro.com/wp-content/uploads/2023/09/Todoroki-Hajime_list_thumb.png"],
++    ["UC9LSiN9hXI55svYEBrrK-tw","響咲リオナ",["Isaki Riona","Riona","リオナ","響咲"],"https://hololive.hololivepro.com/wp-content/uploads/2023/09/Isaki-Riona_list_thumb.png"],
++    ["UCuI_opAVX6qbxZY-a-AxFuQ","虎金妃笑虎",["Koganei Niko","Niko","ニコ","笑虎"],"https://hololive.hololivepro.com/wp-content/uploads/2023/09/Koganei-Niko_list_thumb.png"],
++    ["UCjk2nKmHzgH5Xy-C5qYRd5A","水宮枢",["Mizumiya Su","水宮","すう"],"https://hololive.hololivepro.com/wp-content/uploads/2023/09/Mizumiya-Su_list_thumb.png"],
++    ["UCKMWFR6lAstLa7Vbf5dH7ig","輪堂千速",["Rindo Chihaya","Chihaya","千速","ちはや"],"https://hololive.hololivepro.com/wp-content/uploads/2023/09/Rindo-Chihaya_list_thumb.png"],
++    ["UCGzTVXqMQHa4AgJVJIVvtDQ","綺々羅々ヴィヴィ",["Kikirara Vivi","Vivi","ヴィヴィ"],"https://hololive.hololivepro.com/wp-content/uploads/2023/09/Kikirara-Vivi_list_thumb.png"],
++  ],
++};
+diff --git a/src/hololive.mjs b/src/hololive.mjs
+new file mode 100644
+index 0000000..789595a
+--- /dev/null
++++ b/src/hololive.mjs
+@@ -0,0 +1,218 @@
++import { rosterGroups } from './data/hololive-roster.mjs';
++import { getYouTubeVideos } from './youtube.mjs';
++
++const officialUrl = 'https://schedule.hololive.tv/';
++const hour = 60 * 60 * 1000;
++const day = 24 * hour;
++const groups = Object.entries(rosterGroups).flatMap(([group, rows]) => rows.map(
++  ([id, name, aliases, avatar, affiliation = 'active']) => ({
++    aliases,
++    channel: { id, name, group, affiliation, url: `https://www.youtube.com/channel/${id}`, ...(avatar ? { avatar } : {}) },
++  }),
++));
++const roster = groups.map(({ channel }) => channel);
++const channelsById = new Map(roster.map((channel) => [channel.id, channel]));
++const videoCaches = new WeakMap();
++
++function decodeText(value) {
++  const entities = { amp: '&', apos: "'", gt: '>', lt: '<', nbsp: ' ', quot: '"' };
++  return value.replace(/&(#x[\da-f]+|#\d+|[a-z]+);/gi, (entity, code) => {
++    if (!code.startsWith('#')) return entities[code.toLowerCase()] ?? entity;
++    const point = code[1]?.toLowerCase() === 'x'
++      ? Number.parseInt(code.slice(2), 16)
++      : Number(code.slice(1));
++    return point <= 0x10ffff ? String.fromCodePoint(point) : entity;
++  });
++}
++
++function textContent(html) {
++  return decodeText(html.replace(/<[^>]*>/g, '').trim()).replace(/\s+/g, ' ').trim();
++}
++
++function nameKey(name) {
++  return name.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
++}
++
++const channelsByName = new Map(groups.flatMap(({ channel, aliases }) =>
++  [channel.name, ...aliases].map((name) => [nameKey(name), channel])));
++
++function findChannel(name) {
++  const key = nameKey(name);
++  const direct = channelsByName.get(key);
++  if (direct) return direct;
++  const asobiName = key.match(/(?:メラ|ソピア|つづり|ツヅリ)$/)?.[0];
++  return asobiName ? channelsByName.get(asobiName) : null;
++}
++
++function attributes(tag) {
++  const entries = {};
++  for (const match of tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g)) {
++    entries[match[1].toLowerCase()] = decodeText(match[2] ?? match[3] ?? match[4]);
++  }
++  return entries;
++}
++
++function hasClass(attrs, name) {
++  return attrs.class?.split(/\s+/).includes(name);
++}
++
++function cardField(html, name) {
++  for (const match of html.matchAll(/<(?:div|span)\b[^>]*>/gi)) {
++    if (hasClass(attributes(match[0]), name)) {
++      return textContent(html.slice(match.index + match[0].length).split(/<\/(?:div|span)>/i, 1)[0]);
++    }
++  }
++  return '';
++}
++
++function nearestTokyoDate(month, date, now) {
++  const currentYear = new Date(now + 9 * hour).getUTCFullYear();
++  let closest;
++  for (const year of [currentYear - 1, currentYear, currentYear + 1]) {
++    const candidate = new Date(Date.UTC(year, month - 1, date));
++    if (candidate.getUTCMonth() !== month - 1 || candidate.getUTCDate() !== date) continue;
++    if (!closest || Math.abs(candidate - now) < Math.abs(closest - now)) closest = candidate;
++  }
++  return closest?.toISOString().slice(0, 10);
++}
++
++function youtubeId(rawUrl) {
++  let url;
++  try {
++    url = new URL(rawUrl);
++  } catch {
++    return null;
++  }
++  if (url.protocol !== 'https:') return null;
++  let id;
++  if (url.hostname === 'youtu.be') {
++    id = url.pathname.slice(1);
++  } else if (['youtube.com', 'www.youtube.com', 'm.youtube.com'].includes(url.hostname)) {
++    id = url.pathname === '/watch' ? url.searchParams.get('v') : url.pathname.match(/^\/live\/([^/]+)\/?$/)?.[1];
++  }
++  return /^[\w-]{11}$/.test(id ?? '') ? id : null;
++}
++
++function isLiveCard(attrs) {
++  return /\bborder(?:-color)?\s*:[^;]*(?:\bred\b|#f00(?:000)?\b|#ff0000\b|rgb\(\s*255\s*,\s*0\s*,\s*0\s*\))/i.test(attrs.style ?? '')
++    || hasClass(attrs, 'live')
++    || hasClass(attrs, 'is-live')
++    || ['live', 'true'].includes(attrs['data-live']);
++}
++
++export function parseOfficialSchedule(html, now = Date.now()) {
++  const pane = [...html.matchAll(/<div\b[^>]*>/gi)].find((match) => {
++    const attrs = attributes(match[0]);
++    return attrs.id === 'all' && hasClass(attrs, 'tab-pane');
++  });
++  if (!pane) throw new Error('ホロジュールの配信一覧が見つかりませんでした。');
++
++  const records = new Map();
++  const content = html.slice(pane.index + pane[0].length);
++  let date;
++  for (const match of content.matchAll(/<(div|a)\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi)) {
++    const attrs = attributes(match[0]);
++    const rest = () => content.slice(match.index + match[0].length);
++    if (hasClass(attrs, 'tab-pane')) break;
++    if (hasClass(attrs, 'holodule') && hasClass(attrs, 'navbar-text')) {
++      const [, month, dayOfMonth] = textContent(rest().split(/<\/div>/i, 1)[0]).match(/(\d{1,2})\s*\/\s*(\d{1,2})/) ?? [];
++      date = nearestTokyoDate(Number(month), Number(dayOfMonth), now);
++    } else if (match[1].toLowerCase() === 'a' && hasClass(attrs, 'thumbnail')) {
++      const id = youtubeId(attrs.href);
++      if (!id) continue;
++      const card = rest().split(/<\/a>/i, 1)[0];
++      const channel = findChannel(cardField(card, 'name'));
++      if (!channel) continue;
++      const [, hours, minutes] = cardField(card, 'datetime').match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/) ?? [];
++      if (!date || !hours) throw new Error('ホロジュールの配信日時を読み取れませんでした。');
++      const ms = Date.parse(`${date}T${hours.padStart(2, '0')}:${minutes}:00+09:00`);
++      const title = attrs.title?.trim();
++      const record = {
++        id,
++        channelId: channel.id,
++        title: title || `${channel.name} の配信`,
++        status: isLiveCard(attrs) ? 'live' : ms > now ? 'upcoming' : 'past',
++        startAt: new Date(ms).toISOString(),
++        endAt: null,
++        thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
++        url: `https://www.youtube.com/watch?v=${id}`,
++      };
++      if (!records.has(id) || record.status === 'live') records.set(id, record);
++    }
++  }
++  return [...records.values()];
++}
++
++function enrichmentPriority(record, now) {
++  if (record.status === 'live') return 0;
++  return 1 + Math.abs(Date.parse(record.startAt) - now);
++}
++
++async function enrichAvailable(records, fetchImpl, time, apiKey) {
++  const cache = videoCaches.get(fetchImpl) ?? new Map();
++  videoCaches.set(fetchImpl, cache);
++  const recordIds = new Set(records.map(({ id }) => id));
++  for (const id of cache.keys()) {
++    if (!recordIds.has(id)) cache.delete(id);
++  }
++  const candidates = records.filter(({ id, status, startAt }) =>
++    cache.get(id)?.expiresAt > time ? false : status !== 'past' || Date.parse(startAt) > time - day);
++  candidates.sort((left, right) => enrichmentPriority(left, time) - enrichmentPriority(right, time));
++  const ids = candidates.slice(0, apiKey ? 50 : 12).map(({ id }) => id);
++  if (ids.length) {
++    const videos = await getYouTubeVideos(ids, { fetchImpl, apiKey }).catch(() => []);
++    const byId = new Map(videos.map((video) => [video.id, video]));
++    for (const id of ids) {
++      const video = byId.get(id);
++      const delay = video?.endAt ? 6 * hour : video?.status ? 2 * 60 * 1000 : 6 * 60 * 1000;
++      cache.set(id, { video, expiresAt: time + delay });
++    }
++  }
++  let incomplete = false;
++  const streams = records.map((record) => {
++    const cached = cache.get(record.id);
++    const details = cached?.video;
++    if (!details?.status || (record.status === 'past' && !details.endAt)) incomplete = true;
++    if (!details) return record;
++    const channel = channelsById.get(details.channelId);
++    const fresh = cached.expiresAt > time;
++    const actualStatus = fresh || details.endAt ? details.status : null;
++    return {
++      ...record,
++      channelId: channel?.id ?? record.channelId,
++      title: details.title,
++      thumbnail: details.thumbnail,
++      status: actualStatus ?? record.status,
++      startAt: actualStatus ? details.startAt ?? record.startAt : record.startAt,
++      endAt: details.endAt,
++    };
++  });
++  return { streams, incomplete };
++}
++
++export async function getHololive({ fetchImpl = fetch, now = Date.now, apiKey = process.env.YOUTUBE_API_KEY } = {}) {
++  let records;
++  const time = now();
++  try {
++    const response = await fetchImpl(officialUrl, {
++      headers: { Accept: 'text/html', 'Accept-Language': 'ja', Cookie: 'timezone=Asia/Tokyo' },
++      signal: AbortSignal.timeout(8000),
++    });
++    if (!response.ok) throw new Error(`HTTP ${response.status}`);
++    records = parseOfficialSchedule(await response.text(), time);
++  } catch {
++    return {
++      channels: roster,
++      streams: [],
++      scheduleAvailable: false,
++      warning: '公式ホロジュールに接続できないか、配信一覧を読み取れませんでした。',
++    };
++  }
++  const { streams, incomplete } = await enrichAvailable(records, fetchImpl, time, apiKey);
++  return {
++    channels: roster,
++    streams,
++    scheduleAvailable: true,
++    ...(incomplete ? { warning: '一部の配信は公式ホロジュールの時刻と配信中表示で分類しています。' } : {}),
++  };
++}
+diff --git a/src/schedule.mjs b/src/schedule.mjs
+new file mode 100644
+index 0000000..3460423
+--- /dev/null
++++ b/src/schedule.mjs
+@@ -0,0 +1,185 @@
++import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
++import { dirname } from 'node:path';
++
++const DAY = 24 * 60 * 60 * 1000;
++const REFRESH_INTERVAL = 2 * 60 * 1000;
++const FORCED_REFRESH_INTERVAL = 15 * 1000;
++
++export class ScheduleError extends Error {
++  constructor(statusCode, message) {
++    super(message);
++    this.statusCode = statusCode;
++  }
++}
++
++function readState(path) {
++  try {
++    return JSON.parse(readFileSync(path, 'utf8'));
++  } catch (error) {
++    if (error.code !== 'ENOENT') throw error;
++    return { roster: [], custom: [], preferences: {}, streams: [] };
++  }
++}
++
++export function retainStreams(streams, channels, preferences, time) {
++  const channelIds = new Set(channels.map(({ id }) => id));
++  return streams.filter((stream) => channelIds.has(stream.channelId) && (
++    stream.status !== 'past' ||
++    preferences[stream.channelId] === true ||
++    Date.parse(stream.endAt ?? stream.startAt) > time - DAY
++  ));
++}
++
++function mergeStreams(existing, incoming, time) {
++  const merged = new Map(existing.map((stream) => [stream.id, stream]));
++  for (const stream of incoming) {
++    const previous = merged.get(stream.id);
++    const endAt = stream.endAt ?? (stream.status === 'past'
++      ? previous?.endAt ?? (previous?.status === 'live' ? new Date(time).toISOString() : null)
++      : null);
++    merged.set(stream.id, { ...stream, endAt });
++  }
++  return [...merged.values()];
++}
++
++export function createScheduleService({ file, getHololive, getYouTubeChannel, normalizeChannelUrl, now = Date.now }) {
++  let state = readState(file);
++  let lastAttempt = null;
++  let warnings = [];
++  let refreshing;
++
++  function save(next) {
++    next.streams = retainStreams(next.streams, [...next.roster, ...next.custom], next.preferences, now());
++    if (JSON.stringify(next) === JSON.stringify(state)) return;
++    mkdirSync(dirname(file), { recursive: true });
++    writeFileSync(`${file}.tmp`, JSON.stringify(next), { mode: 0o600 });
++    renameSync(`${file}.tmp`, file);
++    state = next;
++  }
++
++  async function refreshSources() {
++    lastAttempt = now();
++    const registered = state.custom;
++    const hololive = Promise.resolve().then(getHololive).catch(() => null);
++    const customStreams = [];
++    const failures = [];
++    const successful = new Set();
++    let index = 0;
++
++    await Promise.all(Array.from({ length: Math.min(3, registered.length) }, async () => {
++      while (index < registered.length) {
++        const channel = registered[index++];
++        try {
++          const channelData = await getYouTubeChannel(channel.url);
++          if (channelData.warning) failures.push(channel);
++          else successful.add(channel.id);
++          for (const stream of channelData.streams) customStreams.push({ ...stream, channelId: channel.id });
++        } catch {
++          failures.push(channel);
++        }
++      }
++    }));
++
++    const official = await hololive;
++    const activeCustom = new Set(state.custom.map(({ id }) => id));
++    const officialWarnings = official?.warnings ?? (official?.warning ? [official.warning] : []);
++    const officialReady = official !== null && (official.scheduleAvailable ?? (officialWarnings.length === 0));
++    const roster = official?.channels?.length ? official.channels : state.roster;
++    const updatedChannels = new Set(successful);
++    if (officialReady) for (const { id } of roster) updatedChannels.add(id);
++    const incoming = [
++      ...(official?.streams ?? []),
++      ...customStreams.filter(({ channelId }) => activeCustom.has(channelId)),
++    ];
++    const incomingIds = new Set(incoming.map(({ id }) => id));
++    const existing = state.streams.filter((stream) =>
++      stream.status === 'past' || incomingIds.has(stream.id) || !updatedChannels.has(stream.channelId));
++    const streams = mergeStreams(existing, incoming, now());
++    const updatedAt = officialReady || [...successful].some((id) => activeCustom.has(id))
++      ? new Date(now()).toISOString()
++      : state.updatedAt;
++    save({ ...state, roster, streams, updatedAt });
++    warnings = [
++      ...(official === null ? ['ホロライブの配信情報を取得できませんでした。'] : officialWarnings),
++      ...failures.filter(({ id }) => activeCustom.has(id))
++        .map(({ name }) => `${name} の配信情報を更新できませんでした。`),
++    ];
++  }
++
++  async function refresh(force = false) {
++    if (refreshing) return refreshing;
++    const interval = force ? FORCED_REFRESH_INTERVAL : REFRESH_INTERVAL;
++    if (lastAttempt !== null && now() - lastAttempt < interval) return;
++    refreshing = refreshSources().finally(() => { refreshing = undefined; });
++    return refreshing;
++  }
++
++  function snapshot() {
++    const channels = [
++      ...state.roster.map((channel) => ({ ...channel, custom: false })),
++      ...state.custom.map((channel) => ({ ...channel, custom: true })),
++    ].map((channel) => ({ ...channel, keepPast: state.preferences[channel.id] === true }));
++
++    return {
++      channels,
++      streams: retainStreams(state.streams, channels, state.preferences, now()),
++      warnings,
++      updatedAt: state.updatedAt ?? null,
++    };
++  }
++
++  async function addChannel(rawUrl) {
++    let url;
++    try {
++      url = normalizeChannelUrl(rawUrl);
++    } catch {
++      throw new ScheduleError(400, 'YouTube のチャンネル URL を入力してください。');
++    }
++
++    if (state.custom.some((channel) => channel.url === url)) {
++      throw new ScheduleError(409, 'このチャンネルはすでに登録されています。');
++    }
++
++    let result;
++    try {
++      result = await getYouTubeChannel(url);
++    } catch (error) {
++      if (error.code === 'CHANNEL_NOT_FOUND') {
++        throw new ScheduleError(404, 'YouTube チャンネルが見つかりませんでした。');
++      }
++      throw new ScheduleError(502, 'YouTube からチャンネル情報を取得できませんでした。時間をおいて再試行してください。');
++    }
++
++    if ([...state.roster, ...state.custom].some((channel) => channel.id === result.channelId ||
++      channel.url === url)) {
++      throw new ScheduleError(409, 'このチャンネルはすでに登録されています。');
++    }
++
++    const channel = { id: result.channelId, name: result.name, group: '追加チャンネル', url };
++    if (result.avatar) channel.avatar = result.avatar;
++    const streams = mergeStreams(state.streams, result.streams.map((stream) => ({ ...stream, channelId: channel.id })), now());
++    save({ ...state, custom: [...state.custom, channel], streams, updatedAt: new Date(now()).toISOString() });
++    return { ...channel, custom: true, keepPast: false };
++  }
++
++  function setKeepPast(id, keepPast) {
++    if (typeof keepPast !== 'boolean') throw new ScheduleError(400, '保存設定の値が無効です。');
++    if (![...state.roster, ...state.custom].some((channel) => channel.id === id)) {
++      throw new ScheduleError(404, 'チャンネルが見つかりませんでした。');
++    }
++    save({ ...state, preferences: { ...state.preferences, [id]: keepPast } });
++  }
++
++  function removeChannel(id) {
++    if (!state.custom.some((channel) => channel.id === id)) {
++      throw new ScheduleError(404, '追加したチャンネルが見つかりませんでした。');
++    }
++    const preferences = { ...state.preferences };
++    delete preferences[id];
++    save({ ...state, custom: state.custom.filter((channel) => channel.id !== id), preferences });
++  }
++
++  return { refresh, snapshot, addChannel, setKeepPast, removeChannel };
++}
++
++export { REFRESH_INTERVAL };
+diff --git a/src/server.mjs b/src/server.mjs
+new file mode 100644
+index 0000000..ae3f079
+--- /dev/null
++++ b/src/server.mjs
+@@ -0,0 +1,122 @@
++import { createServer } from 'node:http';
++import { readFile } from 'node:fs/promises';
++import { resolve } from 'node:path';
++import { fileURLToPath } from 'node:url';
++import { getHololive } from './hololive.mjs';
++import { getYouTubeChannel, normalizeChannelUrl } from './youtube.mjs';
++import { createScheduleService, REFRESH_INTERVAL, ScheduleError } from './schedule.mjs';
++
++const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
++const defaultDataFile = fileURLToPath(new URL('../.data/schedule.json', import.meta.url));
++const assets = new Map([
++  ['.html', 'text/html; charset=utf-8'],
++  ['.js', 'text/javascript; charset=utf-8'],
++  ['.css', 'text/css; charset=utf-8'],
++  ['.svg', 'image/svg+xml'],
++  ['.webp', 'image/webp'],
++  ['.png', 'image/png'],
++  ['.woff2', 'font/woff2'],
++]);
++
++function json(response, code, body) {
++  response.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
++  response.end(JSON.stringify(body));
++}
++
++async function readJson(request) {
++  if (request.headers['content-type']?.split(';')[0].trim() !== 'application/json') {
++    throw new ScheduleError(415, 'JSON 形式で送信してください。');
++  }
++
++  const chunks = [];
++  let size = 0;
++  for await (const chunk of request.iterator({ destroyOnReturn: false })) {
++    size += chunk.length;
++    if (size > 8192) {
++      request.resume();
++      throw new ScheduleError(413, 'リクエストが大きすぎます。');
++    }
++    chunks.push(chunk);
++  }
++
++  try {
++    const body = JSON.parse(Buffer.concat(chunks));
++    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('Expected object');
++    return body;
++  } catch {
++    throw new ScheduleError(400, 'リクエストの内容を読み取れませんでした。');
++  }
++}
++
++async function serveAsset(request, response, pathname) {
++  const file = pathname === '/' ? '/index.html' : pathname;
++  if (!/^\/(?:assets\/)?[A-Za-z0-9_-]+\.[A-Za-z0-9]+$/.test(file)) return false;
++  const type = assets.get(file.slice(file.lastIndexOf('.')));
++  if (!type) return false;
++  try {
++    const body = await readFile(resolve(publicDir, `.${file}`));
++    response.writeHead(200, { 'Content-Type': type, 'X-Content-Type-Options': 'nosniff' });
++    response.end(request.method === 'HEAD' ? undefined : body);
++    return true;
++  } catch (error) {
++    if (error.code === 'ENOENT') return false;
++    throw error;
++  }
++}
++
++export function createApp({
++  file = defaultDataFile,
++  providers = { getHololive, getYouTubeChannel, normalizeChannelUrl },
++  now,
++} = {}) {
++  const schedule = createScheduleService({ file, ...providers, now });
++  const server = createServer(async (request, response) => {
++    try {
++      const url = new URL(request.url, 'http://localhost');
++      if (request.method === 'GET' && url.pathname === '/api/schedule') {
++        await schedule.refresh(url.searchParams.get('refresh') === '1');
++        return json(response, 200, schedule.snapshot());
++      }
++
++      if (request.method === 'POST' && url.pathname === '/api/channels') {
++        const body = await readJson(request);
++        return json(response, 201, await schedule.addChannel(body.url));
++      }
++
++      const channel = /^\/api\/channels\/([A-Za-z0-9_-]+)$/.exec(url.pathname);
++      if (channel && request.method === 'PATCH') {
++        const body = await readJson(request);
++        schedule.setKeepPast(channel[1], body.keepPast);
++        return json(response, 200, { ok: true });
++      }
++      if (channel && request.method === 'DELETE') {
++        schedule.removeChannel(channel[1]);
++        return json(response, 200, { ok: true });
++      }
++
++      if (['GET', 'HEAD'].includes(request.method) && await serveAsset(request, response, url.pathname)) return;
++      json(response, 404, { error: 'ページが見つかりませんでした。' });
++    } catch (error) {
++      if (!(error instanceof ScheduleError)) console.error(error);
++      json(response, error.statusCode ?? 500, { error: error instanceof ScheduleError ? error.message : '処理中にエラーが発生しました。' });
++    }
++  });
++
++  return { server, schedule };
++}
++
++if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
++  const { server, schedule } = createApp({ file: process.env.SCHEDULE_DATA_FILE || defaultDataFile });
++  const host = process.env.HOST || '127.0.0.1';
++  const port = Number(process.env.PORT || 3000);
++  function refresh() {
++    schedule.refresh().catch((error) => console.error('Schedule refresh failed:', error));
++  }
++  server.listen(port, host, () => {
++    console.log(`YouTube Schedule is running on http://${host}:${server.address().port}`);
++    refresh();
++  });
++  const timer = setInterval(refresh, REFRESH_INTERVAL);
++  timer.unref();
++  server.on('close', () => clearInterval(timer));
++}
+diff --git a/src/youtube.mjs b/src/youtube.mjs
+new file mode 100644
+index 0000000..9d3f7c5
+--- /dev/null
++++ b/src/youtube.mjs
+@@ -0,0 +1,368 @@
++const youtubeOrigin = 'https://www.youtube.com';
++const youtubeHosts = new Set(['www.youtube.com', 'youtube.com', 'm.youtube.com']);
++const channelIdPattern = /^UC[A-Za-z0-9_-]{22}$/;
++const videoIdPattern = /^[A-Za-z0-9_-]{11}$/;
++const channelTabs = new Set(['featured', 'videos', 'shorts', 'streams', 'playlists', 'posts', 'community', 'about']);
++const avatarHosts = new Set(['yt3.googleusercontent.com', 'yt3.ggpht.com', 'lh3.googleusercontent.com']);
++const recentLimit = 24;
++const requestTimeoutMs = 18_000;
++const supplementTimeoutMs = 5_000;
++const completedVideos = new Map();
++const completedVideoLimit = 512;
++const completedVideoLifetimeMs = 6 * 60 * 60 * 1000;
++
++function channelNotFound() {
++  const error = new Error('YouTubeチャンネルが見つかりませんでした。チャンネルのURLを確認してください。');
++  error.code = 'CHANNEL_NOT_FOUND';
++  return error;
++}
++
++export function normalizeChannelUrl(raw) {
++  const invalidUrl = () => new TypeError('YouTubeのチャンネルURL（例 https://www.youtube.com/@NASA）を入力してください。');
++  if (typeof raw !== 'string' || !raw.trim()) throw invalidUrl();
++
++  const input = raw.trim();
++  let url;
++  try {
++    if (input.startsWith('@')) {
++      url = new URL(`/${input}`, youtubeOrigin);
++    } else {
++      url = new URL(/^https?:\/\//i.test(input) ? input : `https://${input}`);
++    }
++  } catch {
++    throw invalidUrl();
++  }
++  if (!youtubeHosts.has(url.hostname) || url.port || url.username || url.password) {
++    throw invalidUrl();
++  }
++
++  let segments;
++  try {
++    segments = url.pathname.replace(/^\/|\/$/g, '').split('/').map(decodeURIComponent);
++  } catch {
++    throw invalidUrl();
++  }
++  const [first, second] = segments;
++  const namePattern = /^[\p{L}\p{M}\p{N}._·-]+$/u;
++  const handle = first.startsWith('@') && namePattern.test(first.slice(1));
++  if (handle && (segments.length === 1 || (segments.length === 2 && channelTabs.has(second)))) {
++    return `${youtubeOrigin}/@${encodeURIComponent(first.slice(1))}`;
++  }
++  const namedChannel = ['c', 'user'].includes(first) && namePattern.test(second ?? '') && !/^\.{1,2}$/.test(second);
++  const idChannel = first === 'channel' && channelIdPattern.test(second ?? '');
++  if ((namedChannel || idChannel) && (segments.length === 2 || (segments.length === 3 && channelTabs.has(segments[2])))) {
++    return `${youtubeOrigin}/${first}/${encodeURIComponent(second)}`;
++  }
++  throw invalidUrl();
++}
++
++async function request(url, { fetchImpl, signal }, headers = {}) {
++  try {
++    return await fetchImpl(url, { signal, headers, redirect: 'manual' });
++  } catch (error) {
++    const message = signal.aborted
++      ? 'YouTubeからの応答が時間内に届きませんでした。'
++      : 'YouTubeに接続できませんでした。クラウド環境の外部ネットワーク設定を確認してください。';
++    throw new Error(message, { cause: error });
++  }
++}
++
++async function youtubePage(url, options, { missing = 'error' } = {}) {
++  let address = new URL(url);
++  for (let redirects = 0; redirects <= 3; redirects++) {
++    const response = await request(address, options, {
++      Accept: 'text/html',
++      'Accept-Language': 'en-US,en;q=0.9',
++    });
++    if (response.status >= 300 && response.status < 400 && response.headers.has('location')) {
++      address = new URL(response.headers.get('location'), address);
++      if (address.protocol !== 'https:' || !youtubeHosts.has(address.hostname) || address.port || address.username || address.password) {
++        throw new Error('YouTubeが同意画面またはログイン画面に転送しました。');
++      }
++      continue;
++    }
++    if (!response.ok) {
++      if (response.status === 404 && missing === 'channel') throw channelNotFound();
++      if (response.status === 404 && missing === 'video') return null;
++      throw new Error(`YouTubeのページを取得できませんでした（HTTP ${response.status}）。`);
++    }
++    return response.text();
++  }
++  throw new Error('YouTubeページを取得する際の転送回数が上限を超えました。');
++}
++
++function embeddedJson(html, name) {
++  const marker = new RegExp(`(?:\\b${name}|window\\[["']${name}["']\\])\\s*=\\s*\\{`, 'g');
++  for (const match of html.matchAll(marker)) {
++    const start = match.index + match[0].length - 1;
++    let depth = 0;
++    let quoted = false;
++    let escaped = false;
++    for (let index = start; index < html.length; index++) {
++      const character = html[index];
++      if (quoted) {
++        if (escaped) escaped = false;
++        else if (character === '\\') escaped = true;
++        else if (character === '"') quoted = false;
++        continue;
++      }
++      if (character === '"') quoted = true;
++      if (character === '{') depth++;
++      if (character === '}' && --depth === 0) {
++        try {
++          return JSON.parse(html.slice(start, index + 1));
++        } catch {
++          break;
++        }
++      }
++    }
++  }
++  return null;
++}
++
++function youtubeBlocked(html, reason = '') {
++  return /before you continue to youtube|not a bot|unusual traffic|consent\.youtube\.com\/save/i.test(reason + html);
++}
++
++function textValue(value) {
++  if (typeof value === 'string') return value;
++  return value?.simpleText ?? value?.content ?? value?.runs?.map(({ text }) => text).join('') ?? '';
++}
++
++function timestamp(value) {
++  if (!value || !/^\d+$|^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:?\d{2})$/i.test(value)) return null;
++  const parsed = /^\d+$/.test(value) ? Number(value) * 1000 : Date.parse(value);
++  if (!Number.isFinite(parsed) || Math.abs(parsed) > 8.64e15) return null;
++  return new Date(parsed).toISOString();
++}
++
++function stream(id, title, status, startAt, endAt = null, channelId = null) {
++  return {
++    id,
++    title,
++    status,
++    startAt,
++    endAt,
++    thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
++    url: `${youtubeOrigin}/watch?v=${id}`,
++    channelId: channelIdPattern.test(channelId ?? '') ? channelId : null,
++  };
++}
++
++function avatarUrl(value) {
++  if (!value) return null;
++  try {
++    const address = new URL(value, youtubeOrigin);
++    return address.protocol === 'https:' && avatarHosts.has(address.hostname)
++      && !address.port && !address.username && !address.password ? address.href : null;
++  } catch {
++    return null;
++  }
++}
++
++function streamCards(contents) {
++  const entries = new Map();
++  const pending = [contents];
++  while (pending.length && entries.size < recentLimit) {
++    const current = pending.pop();
++    if (!current || typeof current !== 'object') continue;
++    const item = current.videoRenderer ?? current.gridVideoRenderer;
++    const lockup = current.lockupViewModel;
++    const id = item?.videoId ?? lockup?.contentId;
++    if (videoIdPattern.test(id ?? '')) {
++      entries.set(id, {
++        id,
++        title: textValue(item?.title ?? lockup?.metadata?.lockupMetadataViewModel?.title),
++        scheduledStartAt: timestamp(item?.upcomingEventData?.startTime),
++      });
++      continue;
++    }
++    const children = Object.values(current);
++    for (let index = children.length - 1; index >= 0; index--) {
++      pending.push(children[index]);
++    }
++  }
++  return [...entries.values()];
++}
++
++async function readPublicChannelPage(url, options) {
++  const html = await youtubePage(`${url}/streams?hl=en`, options, { missing: 'channel' });
++  const data = embeddedJson(html, 'ytInitialData');
++  const metadata = data?.metadata?.channelMetadataRenderer;
++  const name = metadata?.title;
++  const channelId = metadata?.externalId;
++  if (!name || !channelIdPattern.test(channelId ?? '')) {
++    if (youtubeBlocked(html)) throw new Error('YouTubeが同意画面または本人確認画面を返しました。');
++    if (data?.alerts?.some(({ alertRenderer }) => alertRenderer?.type === 'ERROR')) throw channelNotFound();
++    throw new Error('YouTubeの公開チャンネル情報を読み取れませんでした。');
++  }
++
++  const avatar = avatarUrl(metadata?.avatar?.thumbnails?.[0]?.url
++    ?? data.header?.c4TabbedHeaderRenderer?.avatar?.thumbnails?.[0]?.url);
++  const tabs = data?.contents?.twoColumnBrowseResultsRenderer?.tabs;
++  if (!Array.isArray(tabs)) throw new Error('YouTubeの配信一覧を読み取れませんでした。');
++  const streamTab = tabs.map(({ tabRenderer }) => tabRenderer).find((tab) => {
++    if (!tab) return false;
++    const path = tab.endpoint?.commandMetadata?.webCommandMetadata?.url?.split('?')[0] ?? '';
++    return path.endsWith('/streams') || tab.title === 'Live';
++  });
++  if (!streamTab) return { name, channelId, avatar, entries: [] };
++  if (!streamTab.selected || !streamTab.content) throw new Error('YouTubeの配信タブを取得できませんでした。');
++  return { name, channelId, avatar, entries: streamCards(streamTab.content) };
++}
++
++async function readPublicChannel(url, options) {
++  const { entries, ...channel } = await readPublicChannelPage(url, options);
++  const videos = await readPublicVideos(entries, options, { allowPartial: false });
++  const streams = videos.filter(({ startAt, status }) => startAt && status);
++  if (!streams.length && entries.length) throw new Error('YouTubeから配信日時を取得できませんでした。');
++  return { ...channel, streams };
++}
++
++async function readPublicVideos(entries, options, { allowPartial = true } = {}) {
++  const streams = [];
++  const failures = [];
++  for (let index = 0; index < entries.length; index += 6) {
++    const results = await Promise.allSettled(entries.slice(index, index + 6).map((entry) => readPublicStream(entry, options)));
++    for (const result of results) {
++      if (result.status === 'fulfilled' && result.value) streams.push(result.value);
++      if (result.status === 'rejected') failures.push(result.reason);
++    }
++    if (options.signal.aborted || (!allowPartial && failures.length)) break;
++  }
++  if (failures.length && (!allowPartial || !streams.length)) throw failures[0];
++  return streams;
++}
++
++async function readPublicStream({ id, title, scheduledStartAt }, options) {
++  const useCache = options.fetchImpl === fetch;
++  if (useCache) {
++    const cached = completedVideos.get(id);
++    if (cached?.expiresAt > Date.now()) return { ...cached.video };
++    completedVideos.delete(id);
++  }
++  if (title && scheduledStartAt) {
++    return stream(id, title, 'upcoming', scheduledStartAt);
++  }
++
++  const html = await youtubePage(`${youtubeOrigin}/watch?v=${id}&hl=en`, options, { missing: 'video' });
++  if (!html) return null;
++  const player = embeddedJson(html, 'ytInitialPlayerResponse');
++  if (youtubeBlocked(player ? '' : html, player?.playabilityStatus?.reason)) {
++    throw new Error('YouTubeが同意画面または本人確認画面を返しました。');
++  }
++  if (!player) throw new Error('YouTubeの動画情報を読み取れませんでした。');
++  if (player.videoDetails?.videoId && player.videoDetails.videoId !== id) return null;
++  const broadcast = player.microformat?.playerMicroformatRenderer?.liveBroadcastDetails;
++  const offline = player.playabilityStatus?.liveStreamability?.liveStreamabilityRenderer
++    ?.offlineSlate?.liveStreamOfflineSlateRenderer;
++  const videoTitle = player.videoDetails?.title || title;
++  const channelId = player.videoDetails?.channelId;
++  const startAt = timestamp(broadcast?.startTimestamp ?? offline?.scheduledStartTime);
++  if (!videoTitle) return null;
++
++  const endAt = timestamp(broadcast?.endTimestamp);
++  if (endAt) {
++    const video = stream(id, videoTitle, 'past', startAt, endAt, channelId);
++    if (useCache && startAt) {
++      if (completedVideos.size === completedVideoLimit) completedVideos.delete(completedVideos.keys().next().value);
++      completedVideos.set(id, { video: { ...video }, expiresAt: Date.now() + completedVideoLifetimeMs });
++    }
++    return video;
++  }
++  if (broadcast?.isLiveNow || player.videoDetails?.isLive) return stream(id, videoTitle, 'live', startAt, null, channelId);
++  if (offline?.scheduledStartTime || player.playabilityStatus?.status === 'LIVE_STREAM_OFFLINE' || (startAt && Date.parse(startAt) > Date.now())) {
++    return stream(id, videoTitle, 'upcoming', startAt, null, channelId);
++  }
++  const status = broadcast?.isLiveNow === false && startAt ? 'past' : null;
++  return stream(id, videoTitle, status, startAt, null, channelId);
++}
++
++async function youtubeApi(endpoint, params, options, apiKey) {
++  const address = new URL(`https://www.googleapis.com/youtube/v3/${endpoint}`);
++  address.search = new URLSearchParams(params).toString();
++  const response = await request(address, options, { 'X-Goog-Api-Key': apiKey });
++  if (!response.ok) {
++    const hint = [401, 403].includes(response.status) ? 'APIキー、YouTube Data APIの有効化状態、割り当てを確認してください。' : '';
++    throw new Error(`YouTube Data APIに接続できませんでした（HTTP ${response.status}）。${hint}`);
++  }
++  return response.json();
++}
++
++async function readApiChannel(url, options, apiKey) {
++  const [first, second] = new URL(url).pathname.slice(1).split('/').map(decodeURIComponent);
++  const publicPage = first === 'c'
++    ? readPublicChannelPage(url, options)
++    : readPublicChannelPage(url, { ...options, signal: AbortSignal.timeout(supplementTimeoutMs) }).catch(() => null);
++  let lookup;
++  if (first.startsWith('@')) lookup = { forHandle: first };
++  else if (first === 'user') lookup = { forUsername: second };
++  else if (first === 'channel') lookup = { id: second };
++  else lookup = { id: (await publicPage).channelId };
++  const api = (endpoint, params) => youtubeApi(endpoint, params, options, apiKey);
++  const channel = (await api('channels', { part: 'snippet,contentDetails', ...lookup })).items?.[0];
++  const channelId = channel?.id;
++  const name = channel?.snippet?.title;
++  if (!name || !channelIdPattern.test(channelId ?? '')) throw channelNotFound();
++  const uploads = channel.contentDetails?.relatedPlaylists?.uploads;
++  if (!uploads) throw new Error('YouTubeのアップロード一覧を取得できませんでした。');
++
++  const [{ items = [] }, publicChannel] = await Promise.all([
++    api('playlistItems', { part: 'contentDetails', playlistId: uploads, maxResults: '50' }),
++    publicPage,
++  ]);
++  const entries = publicChannel?.channelId === channelId ? publicChannel.entries : [];
++  const ids = [...new Set([
++    ...entries.map(({ id }) => id),
++    ...items.map(({ contentDetails }) => contentDetails?.videoId),
++  ])].filter((id) => videoIdPattern.test(id ?? ''));
++  const videos = await readApiVideos(ids, options, apiKey);
++  const streams = videos.filter(({ startAt, status }) => startAt && status);
++  const streamIds = new Set(streams.map(({ id }) => id));
++  for (const { id, title, scheduledStartAt } of entries) {
++    if (!streamIds.has(id) && title && scheduledStartAt) {
++      streams.push(stream(id, title, 'upcoming', scheduledStartAt, null, channelId));
++    }
++  }
++  const thumbnails = channel.snippet?.thumbnails;
++  const avatar = avatarUrl(thumbnails?.high?.url ?? thumbnails?.default?.url) ?? publicChannel?.avatar ?? null;
++  return { name, channelId, avatar, streams };
++}
++
++async function readApiVideos(ids, options, apiKey) {
++  const streams = [];
++  for (let index = 0; index < ids.length; index += 50) {
++    const { items = [] } = await youtubeApi('videos', {
++      part: 'snippet,liveStreamingDetails',
++      id: ids.slice(index, index + 50).join(','),
++    }, options, apiKey);
++    for (const { id, snippet, liveStreamingDetails: details } of items) {
++      const title = snippet?.title;
++      const actualStart = timestamp(details?.actualStartTime);
++      const startAt = actualStart ?? timestamp(details?.scheduledStartTime);
++      const endAt = timestamp(details?.actualEndTime);
++      if (!videoIdPattern.test(id ?? '') || !title) continue;
++      const status = endAt ? 'past' : actualStart ? 'live' : startAt ? 'upcoming' : null;
++      streams.push(stream(id, title, status, startAt, endAt, snippet?.channelId));
++    }
++  }
++  return streams;
++}
++
++export async function getYouTubeVideos(videoIds, { fetchImpl = fetch, apiKey = process.env.YOUTUBE_API_KEY } = {}) {
++  const ids = [...new Set(videoIds)].filter((id) => typeof id === 'string' && videoIdPattern.test(id));
++  const options = { fetchImpl, signal: AbortSignal.timeout(requestTimeoutMs) };
++  return apiKey
++    ? await readApiVideos(ids, options, apiKey)
++    : await readPublicVideos(ids.map((id) => ({ id })), options);
++}
++
++export async function getYouTubeChannel(rawUrl, { fetchImpl = fetch, apiKey = process.env.YOUTUBE_API_KEY } = {}) {
++  const url = normalizeChannelUrl(rawUrl);
++  const options = { fetchImpl, signal: AbortSignal.timeout(requestTimeoutMs) };
++  const channel = apiKey
++    ? await readApiChannel(url, options, apiKey)
++    : await readPublicChannel(url, options);
++  channel.streams.sort((a, b) => a.startAt.localeCompare(b.startAt));
++  return channel;
++}
+diff --git a/test/hololive.test.mjs b/test/hololive.test.mjs
+new file mode 100644
+index 0000000..31d2eaf
+--- /dev/null
++++ b/test/hololive.test.mjs
+@@ -0,0 +1,75 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++import { getHololive, parseOfficialSchedule } from '../src/hololive.mjs';
++
++const now = () => Date.parse('2026-12-31T16:00:00Z');
++const soraId = 'UCp6993wxpyDPHUpavwDFqgg';
++
++function card(id, name, time, attrs = '', href = `https://www.youtube.com/watch?v=${id}`) {
++  return `<a class="thumbnail" href="${href}" ${attrs}>
++    <div class="container">
++      <div class="text-left datetime"><img alt=""> ${time}</div>
++      <div class="text-right name">${name}</div>
++    </div>
++  </a>`;
++}
++
++function schedule(body) {
++  return `<!doctype html><div class="tab-pane show active" id="all">${body}</div>`;
++}
++
++test('reads JST date groups across New Year, live indicators and public YouTube channel cards', () => {
++  const rows = parseOfficialSchedule(schedule(`
++    <div class="holodule navbar-text">12/31 (木)</div>
++    ${card('archive1234', 'ときのそら', '23:00', 'title="Black &amp; White"')}
++    <div class="holodule navbar-text">01/01 (金)</div>
++    ${card('livestream1', 'Calli', '00:30', 'style="border: 3px red solid;"')}
++    ${card('future12345', 'FUWAMOCO', '07:05', '', 'https://youtu.be/future12345')}
++    ${card('exclude1234', 'アステル・レダ', '08:00')}
++    ${card('notyoutube1', '小鳥遊キアラ', '08:00', '', 'https://example.org/livestream')}
++  `), now());
++  assert.deepEqual(rows.map(({ title, status, startAt }) => ({ title, status, startAt })), [
++    { title: 'Black & White', status: 'past', startAt: '2026-12-31T14:00:00.000Z' },
++    { title: 'Mori Calliope の配信', status: 'live', startAt: '2026-12-31T15:30:00.000Z' },
++    { title: 'FUWAMOCO の配信', status: 'upcoming', startAt: '2026-12-31T22:05:00.000Z' },
++  ]);
++});
++
++test('adds YouTube’s title and actual completion time to official cards', async () => {
++  const id = 'archive1234';
++  const result = await getHololive({
++    now,
++    apiKey: 'test',
++    async fetchImpl(url) {
++      if (url === 'https://schedule.hololive.tv/') {
++        return new Response(schedule(`<div class="navbar-text holodule">12/31</div>${card(id, 'ときのそら', '23:00')}`));
++      }
++      assert.equal(url.hostname, 'www.googleapis.com');
++      assert.equal(url.searchParams.get('id'), id);
++      return Response.json({ items: [{
++        id,
++        snippet: { title: '年越し配信', channelId: soraId },
++        liveStreamingDetails: { actualStartTime: '2026-12-31T14:50:00Z', actualEndTime: '2026-12-31T15:30:00Z' },
++      }] });
++    },
++  });
++  assert.equal(result.scheduleAvailable, true);
++  assert.equal(result.warning, undefined);
++  assert.equal(result.streams[0].title, '年越し配信');
++  assert.equal(result.streams[0].channelId, soraId);
++  assert.equal(result.streams[0].endAt, '2026-12-31T15:30:00.000Z');
++});
++
++test('distinguishes valid empty listings from failure and retains the complete roster', async () => {
++  const empty = await getHololive({ fetchImpl: async () => new Response(schedule('')) });
++  const blocked = await getHololive({ fetchImpl: async () => new Response('Forbidden', { status: 403 }) });
++  assert.equal(empty.scheduleAvailable, true);
++  assert.equal(blocked.scheduleAvailable, false);
++  assert.deepEqual(empty.streams, []);
++  assert.deepEqual(blocked.streams, []);
++  assert.equal(empty.warning, undefined);
++  assert.ok(blocked.warning);
++  assert.equal(empty.channels.length, 68);
++  assert.deepEqual(blocked.channels, empty.channels);
++  assert.equal(empty.channels.filter(({ name }) => name === 'FUWAMOCO').length, 1);
++});
+diff --git a/test/schedule.test.mjs b/test/schedule.test.mjs
+new file mode 100644
+index 0000000..aabe320
+--- /dev/null
++++ b/test/schedule.test.mjs
+@@ -0,0 +1,115 @@
++import assert from 'node:assert/strict';
++import { mkdtemp, rm } from 'node:fs/promises';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { test } from 'node:test';
++import { createApp } from '../src/server.mjs';
++
++const hour = 3600000;
++const baseTime = Date.parse('2026-11-20T09:30:00Z');
++const official = { id: 'official', name: '公式タレント', url: 'https://www.youtube.com/@official', group: 'hololive JP' };
++const custom = { name: '追加テスト', channelId: 'UCcustom' };
++
++function stream(id, status, startOffset, endOffset = null) {
++  return {
++    id, title: id, status,
++    startAt: new Date(baseTime + startOffset * hour).toISOString(),
++    endAt: endOffset === null ? null : new Date(baseTime + endOffset * hour).toISOString(),
++    url: `https://www.youtube.com/watch?v=${id}`,
++  };
++}
++
++function providers() {
++  return {
++    getHololive: async () => ({
++      channels: [official],
++      streams: [
++        stream('old', 'past', -30, -25),
++        stream('recent', 'past', -26, -23),
++        stream('on-air', 'live', -1),
++        stream('next', 'upcoming', 2),
++      ].map((item) => ({ ...item, channelId: official.id })),
++    }),
++    normalizeChannelUrl: (url) => {
++      if (url !== 'https://www.youtube.com/@custom' && url !== 'https://www.youtube.com/@other') {
++        throw new Error('Invalid URL');
++      }
++      return url;
++    },
++    getYouTubeChannel: async () => ({ ...custom, streams: [stream('custom-next', 'upcoming', 5)] }),
++  };
++}
++
++async function startApp(t, options) {
++  const { server } = createApp(options);
++  await new Promise((resolve, reject) => {
++    server.once('error', reject);
++    server.listen(0, '127.0.0.1', resolve);
++  });
++  t.after(() => new Promise((resolve) => server.close(resolve)));
++  const origin = `http://127.0.0.1:${server.address().port}`;
++  return (path, method = 'GET', payload) => fetch(origin + path, {
++    method,
++    ...(payload === undefined ? {} : {
++      headers: { 'Content-Type': 'application/json' },
++      body: JSON.stringify(payload),
++    }),
++  });
++}
++
++test('schedule API exposes all statuses and persists selected retention and added channels', async (t) => {
++  const dir = await mkdtemp(join(tmpdir(), 'youtube-schedule-'));
++  t.after(() => rm(dir, { recursive: true, force: true }));
++  const file = join(dir, 'schedule.json');
++  let time = baseTime;
++  const options = { file, providers: providers(), now: () => time };
++  const request = await startApp(t, options);
++
++  const initial = await (await request('/api/schedule')).json();
++  assert.deepEqual(initial.streams.map(({ id }) => id), ['recent', 'on-air', 'next']);
++  assert.deepEqual(initial.streams.map(({ status }) => status), ['past', 'live', 'upcoming']);
++  assert.equal(initial.channels[0].keepPast, false);
++
++  assert.equal((await request('/api/channels/official', 'PATCH', { keepPast: true })).status, 200);
++  assert.equal((await request('/api/channels', 'POST', { url: 'https://www.youtube.com/@custom' })).status, 201);
++  assert.equal((await request('/api/channels', 'POST', { url: 'https://www.youtube.com/@custom' })).status, 409);
++  assert.equal((await request('/api/channels', 'POST', { url: 'https://www.youtube.com/@other' })).status, 409);
++  assert.equal((await request('/api/channels', 'POST', { url: 'https://example.com/@custom' })).status, 400);
++
++  time += 2 * hour;
++  const restarted = await startApp(t, options);
++  const snapshot = await (await restarted('/api/schedule')).json();
++  assert.equal(snapshot.channels.find(({ id }) => id === official.id).keepPast, true);
++  assert.equal(snapshot.channels.find(({ id }) => id === custom.channelId).custom, true);
++  assert.ok(snapshot.streams.some(({ id }) => id === 'recent'));
++  assert.ok(snapshot.streams.some(({ id }) => id === 'custom-next'));
++  assert.ok(snapshot.streams.some(({ id }) => id === 'old'));
++
++  assert.equal((await restarted('/api/channels/official', 'PATCH', { keepPast: false })).status, 200);
++  assert.equal((await restarted('/api/channels/UCcustom', 'DELETE')).status, 200);
++  const after = await (await restarted('/api/schedule')).json();
++  assert.deepEqual(after.streams.map(({ id }) => id), ['on-air', 'next']);
++  assert.equal(after.channels.length, 1);
++});
++
++test('schedule keeps cached data and displays warnings during an upstream failure', async (t) => {
++  const dir = await mkdtemp(join(tmpdir(), 'youtube-schedule-'));
++  t.after(() => rm(dir, { recursive: true, force: true }));
++  let time = baseTime;
++  let available = true;
++  const sources = providers();
++  const { getHololive } = sources;
++  sources.getHololive = async () => {
++    if (!available) return { channels: [official], streams: [], scheduleAvailable: false, warning: 'source unavailable' };
++    return getHololive();
++  };
++
++  const request = await startApp(t, { file: join(dir, 'schedule.json'), providers: sources, now: () => time });
++  const initial = await (await request('/api/schedule')).json();
++  available = false;
++  time += 20_000;
++  const cached = await (await request('/api/schedule?refresh=1')).json();
++  assert.deepEqual(cached.warnings, ['source unavailable']);
++  assert.deepEqual(cached.streams, initial.streams);
++  assert.equal(cached.updatedAt, initial.updatedAt);
++});
+diff --git a/test/youtube.test.mjs b/test/youtube.test.mjs
+new file mode 100644
+index 0000000..057f1da
+--- /dev/null
++++ b/test/youtube.test.mjs
+@@ -0,0 +1,153 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++import { getYouTubeChannel, getYouTubeVideos, normalizeChannelUrl } from '../src/youtube.mjs';
++
++const channelId = 'UC1234567890123456789012';
++const upcomingId = 'upcoming123';
++const liveId = 'livestream1';
++const pastId = 'paststream1';
++const avatar = 'https://yt3.googleusercontent.com/example=s88';
++const channelUrl = 'https://www.youtube.com/@example';
++
++function html(key, value) {
++  return new Response('<script>window["' + key + '"] = ' + JSON.stringify(value) + ';</script>');
++}
++
++function streamTab(children) {
++  return html('ytInitialData', {
++    metadata: { channelMetadataRenderer: { title: '配信チャンネル', externalId: channelId, avatar: { thumbnails: [{ url: avatar }] } } },
++    contents: {
++      twoColumnBrowseResultsRenderer: {
++        tabs: [{
++          tabRenderer: {
++            title: 'Live',
++            selected: true,
++            content: { richGridRenderer: { contents: children } },
++          },
++        }],
++      },
++    },
++  });
++}
++
++function watchPage(id, liveBroadcastDetails) {
++  return html('ytInitialPlayerResponse', {
++    videoDetails: { videoId: id, channelId, title: '配信 {特別編} "タイトル"' },
++    microformat: { playerMicroformatRenderer: { liveBroadcastDetails } },
++  });
++}
++
++test('normalizes supported channel links and rejects video links or other sites', () => {
++  assert.equal(normalizeChannelUrl('@example'), channelUrl);
++  assert.equal(normalizeChannelUrl('http://m.youtube.com/@example/streams?view=0#section'), channelUrl);
++  assert.equal(normalizeChannelUrl('youtube.com/@配信者'), 'https://www.youtube.com/@%E9%85%8D%E4%BF%A1%E8%80%85');
++  assert.equal(normalizeChannelUrl('https://youtube.com/channel/' + channelId), 'https://www.youtube.com/channel/' + channelId);
++  assert.equal(normalizeChannelUrl('https://youtube.com/c/example/videos/'), 'https://www.youtube.com/c/example');
++  assert.equal(normalizeChannelUrl('https://youtube.com/user/example'), 'https://www.youtube.com/user/example');
++  for (const input of [
++    'https://www.youtube.com/watch?v=' + pastId,
++    'https://youtube.com.example.org/@example',
++    'https://example.org/@example',
++    'https://user@www.youtube.com/@example',
++    'https://www.youtube.com:9999/@example',
++    'https://www.youtube.com/@example%2Fwatch',
++    'https://www.youtube.com/@example/unknown',
++  ]) assert.throws(() => normalizeChannelUrl(input), TypeError);
++});
++
++test('collects exact public broadcast times for upcoming, live, and past streams', async () => {
++  const start = '2026-11-19T09:00:00+09:00';
++  const fetchImpl = async (url) => {
++    if (url.pathname.endsWith('/streams')) {
++      return streamTab([
++        { videoRenderer: { videoId: upcomingId, title: { runs: [{ text: '予定配信' }] }, upcomingEventData: { startTime: '1795312800' } } },
++        { lockupViewModel: { contentId: liveId, metadata: { lockupMetadataViewModel: { title: { content: '放送中' } } } } },
++        { gridVideoRenderer: { videoId: pastId, title: { simpleText: '過去の配信' } } },
++      ]);
++    }
++    const id = url.searchParams.get('v');
++    if (id === liveId) return watchPage(id, { isLiveNow: true, startTimestamp: start });
++    if (id === pastId) return watchPage(id, { isLiveNow: false, startTimestamp: '2026-11-18T21:00:00Z', endTimestamp: '2026-11-18T22:00:00Z' });
++    assert.fail('unexpected request ' + url.href);
++  };
++  const channel = await getYouTubeChannel(channelUrl, { fetchImpl, apiKey: null });
++  assert.equal(channel.name, '配信チャンネル');
++  assert.equal(channel.channelId, channelId);
++  assert.equal(channel.avatar, avatar);
++  assert.deepEqual(channel.streams.map(({ id, status }) => [id, status]), [
++    [pastId, 'past'], [liveId, 'live'], [upcomingId, 'upcoming'],
++  ]);
++  assert.equal(channel.streams[0].endAt, '2026-11-18T22:00:00.000Z');
++  assert.equal(channel.streams[1].startAt, '2026-11-19T00:00:00.000Z');
++  assert.equal(channel.streams[1].title, '配信 {特別編} "タイトル"');
++  assert.equal(channel.streams[2].startAt, new Date(1795312800 * 1000).toISOString());
++});
++
++test('distinguishes a blank listing, a missing channel, and cloud or YouTube failures', async () => {
++  const fetchEmpty = async () => streamTab([]);
++  assert.deepEqual((await getYouTubeChannel(channelUrl, { fetchImpl: fetchEmpty, apiKey: null })).streams, []);
++
++  const fetch404 = async () => new Response('', { status: 404 });
++  await assert.rejects(getYouTubeChannel(channelUrl, { fetchImpl: fetch404, apiKey: null }), { code: 'CHANNEL_NOT_FOUND' });
++
++  const fetchConsent = async () => new Response('<h1>Before you continue to YouTube</h1>');
++  await assert.rejects(getYouTubeChannel(channelUrl, { fetchImpl: fetchConsent, apiKey: null }), /同意画面/);
++
++  const fetchUnavailable = async (url) => url.pathname.endsWith('/streams')
++    ? streamTab([
++        { gridVideoRenderer: { videoId: liveId } },
++        { gridVideoRenderer: { videoId: pastId } },
++      ])
++    : url.searchParams.get('v') === liveId
++      ? watchPage(liveId, { isLiveNow: true, startTimestamp: '2026-11-19T00:00:00Z' })
++      : new Response('', { status: 502 });
++  await assert.rejects(getYouTubeChannel(channelUrl, { fetchImpl: fetchUnavailable, apiKey: null }), /502/);
++});
++
++test('enriches known video IDs even if a metadata record has no broadcast information', async () => {
++  const fetchImpl = async (url) => url.searchParams.get('v') === liveId
++    ? watchPage(liveId)
++    : new Response('', { status: 503 });
++  const videos = await getYouTubeVideos([liveId, pastId, 'invalid', liveId], { fetchImpl, apiKey: null });
++  assert.equal(videos.length, 1);
++  assert.equal(videos[0].channelId, channelId);
++  assert.equal(videos[0].status, null);
++  assert.equal(videos[0].startAt, null);
++});
++
++test('uses economical Data API calls and supplements the uploads playlist from the public Streams tab', async () => {
++  const apiCalls = [];
++  const fetchImpl = async (url, options) => {
++    if (url.hostname === 'www.youtube.com') {
++      return streamTab([{ videoRenderer: { videoId: upcomingId } }]);
++    }
++    assert.equal(url.hostname, 'www.googleapis.com');
++    assert.equal(options.headers['X-Goog-Api-Key'], 'unit-test-key');
++    const endpoint = url.pathname.split('/').at(-1);
++    apiCalls.push(endpoint);
++    if (endpoint === 'channels') {
++      assert.equal(url.searchParams.get('forHandle'), '@example');
++      return Response.json({ items: [{
++        id: channelId,
++        snippet: { title: '配信チャンネル', thumbnails: { high: { url: avatar } } },
++        contentDetails: { relatedPlaylists: { uploads: 'uploads-playlist' } },
++      }] });
++    }
++    if (endpoint === 'playlistItems') {
++      assert.equal(url.searchParams.get('playlistId'), 'uploads-playlist');
++      return Response.json({ items: [{ contentDetails: { videoId: pastId } }] });
++    }
++    if (endpoint === 'videos') {
++      assert.equal(url.searchParams.get('id'), upcomingId + ',' + pastId);
++      return Response.json({ items: [
++        { id: pastId, snippet: { title: 'アーカイブ', channelId }, liveStreamingDetails: { actualStartTime: '2026-11-18T21:00:00Z', actualEndTime: '2026-11-18T22:00:00Z' } },
++        { id: upcomingId, snippet: { title: '予告', channelId }, liveStreamingDetails: { scheduledStartTime: '2026-11-21T02:00:00Z' } },
++      ] });
++    }
++    assert.fail('unexpected request ' + url.href);
++  };
++  const channel = await getYouTubeChannel(channelUrl, { fetchImpl, apiKey: 'unit-test-key' });
++  assert.deepEqual(apiCalls, ['channels', 'playlistItems', 'videos']);
++  assert.deepEqual(channel.streams.map(({ status }) => status), ['past', 'upcoming']);
++  assert.equal(channel.avatar, avatar);
++});
+-- 
+2.52.0
+
+
+From b25c5b759463f398225b80afd79cccdf3e15070a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=E3=81=AF=E3=82=8B=E3=81=8D?= <shien0zero@gmail.com>
+Date: Fri, 20 Nov 2026 08:11:32 +0000
+Subject: [PATCH 2/2] Add official Hololive channel and roster controls
+
+---
+ README.md                    |  7 ++-
+ package.json                 |  1 +
+ public/app.js                | 97 ++++++++++++++++++++++--------------
+ public/index.html            |  9 ++--
+ public/styles.css            |  5 +-
+ src/data/hololive-roster.mjs | 14 ++++--
+ src/hololive.mjs             | 73 +++++++++++++++------------
+ src/schedule.mjs             | 41 +++++++++++----
+ src/server.mjs               | 23 ++++++++-
+ test/hololive.test.mjs       | 87 +++++++++++++++++++++++++++++---
+ test/schedule.test.mjs       |  6 +++
+ 11 files changed, 264 insertions(+), 99 deletions(-)
+
+diff --git a/README.md b/README.md
+index 130c756..5f817f5 100644
+--- a/README.md
++++ b/README.md
+@@ -10,11 +10,14 @@ Node.js 24.5 以降で、リポジトリのルートから実行します。追
+ npm start
+ ```
+ 
+-ブラウザで `http://127.0.0.1:3000` を開きます。ポートは `PORT` で変更できます。デフォルトはループバック接続です。クラウドのポート公開を利用する場合は `HOST=0.0.0.0 npm start` で起動できます。設定と履歴は同じサーバーを使う利用者で共有されます。
++ブラウザで `http://127.0.0.1:3000` を開きます。ブラウザと同じ端末で起動する場合は、`npm run open` でアプリの起動と既定のブラウザでの表示をまとめて行えます。Codex のクラウド環境では、右パネルの「＋」から Desktop を開ける場合、その中のブラウザで起動時に表示されたURLを開いてください。
++
++ポートは `PORT` で変更できます。デフォルトはループバック接続です。クラウドのポート公開を利用する場合は `HOST=0.0.0.0 npm start` で起動できます。設定と履歴は同じサーバーを使う利用者で共有されます。
+ 
+ ## 使い方
+ 
+ - 「チャンネルを追加」に YouTube チャンネルの URL を入力します。例は `https://www.youtube.com/@NASA` です。
++- 「チャンネル設定」からチャンネルを一覧から外せます。初期登録のタレント・公式チャンネルは非表示になり、設定から再表示できます。手動で追加したチャンネルは削除されます。
+ - 過去配信は終了から原則24時間で一覧と保存対象から外れます。終了時刻が取得できない場合は、配信の終了を確認した時刻か開始時刻を基準にします。「チャンネル設定」で「過去の配信を残す」を有効にすると、そのチャンネルの取得済みの配信を24時間経過後も表示します。取得済みの範囲で履歴を残します。
+ - サーバーの稼働中は約2分ごとに配信情報を取得します。通信に失敗した場合は画面にメッセージが出ます。
+ - 追加チャンネル、保存設定、取得した履歴は `.data/schedule.json` に保存されます。別の保存先を使う場合は `SCHEDULE_DATA_FILE` にファイルパスを設定してください。
+@@ -23,7 +26,7 @@ npm start
+ 
+ ホロライブの公式スケジュールと YouTube の公開情報を取得します。YouTube の配信枠を対象にしており、限定公開・メンバー限定など取得できない枠があります。さかのぼれる範囲は取得元が公開している一覧に依存します。取得元への接続が制限されている環境では、`schedule.hololive.tv` と `www.youtube.com` への HTTPS 通信を許可してください。サムネイルには `i.ytimg.com` へのアクセスを使います。
+ 
+-初期のチャンネル一覧には JP・ID・EN・DEV_IS の女性タレントとアフィリエイトを収録しています。FUWAMOCO は共有チャンネル1件として表示します。名簿を更新するときは `src/data/hololive-roster.mjs` を編集してください。
++初期のチャンネル一覧にはホロライブ公式YouTubeチャンネルと、JP・ID・EN・DEV_IS の女性タレントとアフィリエイトを収録しています。FUWAMOCO と holoAN room はそれぞれ共有チャンネル1件として表示します。名簿を更新するときは `src/data/hololive-roster.mjs` を編集してください。
+ 
+ 公開ページからの取得には API キーが不要です。YouTube Data API v3 を利用する場合は、環境変数 `YOUTUBE_API_KEY` を設定し、`www.googleapis.com` への HTTPS 通信も許可してください。公開ページに接続できない場合、追加チャンネルの情報は API のアップロード一覧に含まれる配信に限られます。
+ 
+diff --git a/package.json b/package.json
+index 9468b4e..9d960f7 100644
+--- a/package.json
++++ b/package.json
+@@ -5,6 +5,7 @@
+   "type": "module",
+   "engines": { "node": ">=24.5" },
+   "scripts": {
++    "open": "node --use-env-proxy src/server.mjs --open",
+     "start": "node --use-env-proxy src/server.mjs",
+     "test": "node --test"
+   }
+diff --git a/public/app.js b/public/app.js
+index 12281a0..8375ea8 100644
+--- a/public/app.js
++++ b/public/app.js
+@@ -24,6 +24,7 @@ const dialog = byId("settings-dialog");
+ const rosterSearch = byId("roster-search");
+ const rosterGroup = byId("roster-group");
+ const retainedFilter = byId("roster-retained");
++const hiddenFilter = byId("roster-hidden");
+ const form = byId("add-channel-form");
+ const channelUrl = byId("channel-url");
+ const refreshButton = byId("refresh");
+@@ -106,6 +107,13 @@ function setGroups(select, channels) {
+   if (groups.includes(selected)) select.value = selected;
+ }
+ 
++function updateChannelControls(channels) {
++  const visible = channels.filter((channel) => !channel.hidden);
++  setGroups(scheduleGroup, visible);
++  setGroups(rosterGroup, channels);
++  byId("channel-count").textContent = visible.length.toLocaleString("ja-JP");
++}
++
+ async function loadSchedule({ refresh = false } = {}) {
+   const version = ++state.loadVersion;
+   state.loading = true;
+@@ -117,9 +125,7 @@ async function loadSchedule({ refresh = false } = {}) {
+     if (version !== state.loadVersion) return;
+     state.data = data;
+     state.error = null;
+-    setGroups(scheduleGroup, data.channels);
+-    setGroups(rosterGroup, data.channels);
+-    byId("channel-count").textContent = data.channels.length.toLocaleString("ja-JP");
++    updateChannelControls(data.channels);
+     if (dialog.open) renderRoster();
+   } catch (error) {
+     if (version === state.loadVersion) state.error = error.message;
+@@ -264,6 +270,7 @@ function renderSchedule() {
+   const channels = new Map(data.channels.map((channel) => [channel.id, channel]));
+   const matches = data.streams.filter((stream) => {
+     const channel = channels.get(stream.channelId);
++    if (channel?.hidden) return false;
+     if (groups && groups !== channel?.group) return false;
+     return !query || searchValue(stream.title).includes(query) || searchValue(channel?.name).includes(query);
+   });
+@@ -311,6 +318,7 @@ function selectTab(tab) {
+ 
+ function rosterRow(channel) {
+   const row = element("li", "roster-row");
++  row.dataset.channelId = channel.id;
+   const avatar = element("div", "roster-avatar");
+   avatar.setAttribute("aria-hidden", "true");
+   media(avatar, channel.avatar, Array.from(channel.name)[0] || "▶");
+@@ -322,35 +330,43 @@ function rosterRow(channel) {
+     name.target = "_blank";
+     name.rel = "noopener noreferrer";
+   }
+-  identity.append(name, element("span", "roster-group", channel.group));
+-
+-  const label = element("label", "roster-switch-label");
+-  const toggle = element("input", "roster-switch");
+-  toggle.type = "checkbox";
+-  toggle.setAttribute("role", "switch");
+-  toggle.setAttribute("aria-label", channel.name + "の過去の配信を残す");
+-  toggle.dataset.toggle = channel.id;
+-  toggle.checked = channel.keepPast;
+-  toggle.disabled = state.pendingChannels.has(channel.id);
+-  toggle.addEventListener("change", () => {
+-    mutateChannel(channel, "PATCH", { keepPast: toggle.checked }, "過去の配信の設定を保存しました。", "toggle");
+-  });
+-  label.append(toggle, element("span", "", "過去の配信を残す"));
+-  row.append(avatar, identity, label);
+-
+-  if (channel.custom) {
+-    const remove = element("button", "button remove-button", "削除");
+-    remove.type = "button";
+-    remove.dataset.remove = channel.id;
+-    remove.disabled = state.pendingChannels.has(channel.id);
+-    remove.setAttribute("aria-label", channel.name + "を削除");
+-    remove.addEventListener("click", () => {
+-      if (window.confirm(channel.name + "を一覧から削除しますか？")) {
+-        mutateChannel(channel, "DELETE", undefined, "チャンネルを削除しました。", "remove");
+-      }
++  const group = element("span", "roster-group", channel.group);
++  if (channel.hidden) group.append(element("span", "hidden-badge", "非表示"));
++  identity.append(name, group);
++  row.append(avatar, identity);
++
++  if (!channel.hidden) {
++    const label = element("label", "roster-switch-label");
++    const toggle = element("input", "roster-switch");
++    toggle.type = "checkbox";
++    toggle.setAttribute("role", "switch");
++    toggle.setAttribute("aria-label", channel.name + "の過去の配信を残す");
++    toggle.dataset.toggle = channel.id;
++    toggle.checked = channel.keepPast;
++    toggle.disabled = state.pendingChannels.has(channel.id);
++    toggle.addEventListener("change", () => {
++      mutateChannel(channel, "PATCH", { keepPast: toggle.checked }, "過去の配信の設定を保存しました。", "toggle");
+     });
+-    row.append(remove);
++    label.append(toggle, element("span", "", "過去の配信を残す"));
++    row.append(label);
+   }
++
++  const actionName = channel.hidden ? "再表示" : channel.custom ? "削除" : "非表示";
++  const action = element("button", channel.custom ? "button roster-action remove-button" : "button secondary roster-action", actionName);
++  action.type = "button";
++  action.dataset.action = channel.id;
++  action.disabled = state.pendingChannels.has(channel.id);
++  action.setAttribute("aria-label", channel.name + "を" + actionName);
++  action.addEventListener("click", () => {
++    if (channel.hidden) {
++      mutateChannel(channel, "PATCH", { hidden: false }, "チャンネルを再表示しました。", "action");
++      return;
++    }
++    if (channel.custom && !window.confirm(channel.name + "を一覧から削除しますか？")) return;
++    const message = channel.custom ? "チャンネルを削除しました。" : "チャンネルを非表示にしました。";
++    mutateChannel(channel, "DELETE", undefined, message, "action");
++  });
++  row.append(action);
+   return row;
+ }
+ 
+@@ -359,10 +375,11 @@ function renderRoster(focusAfter) {
+   const query = searchValue(rosterSearch.value);
+   const group = rosterGroup.value;
+   const current = document.activeElement?.dataset;
+-  const focus = focusAfter ?? (current?.toggle ? ["toggle", current.toggle] : current?.remove ? ["remove", current.remove] : null);
++  const focus = focusAfter ?? (current?.toggle ? ["toggle", current.toggle] : current?.action ? ["action", current.action] : null);
+   const channels = (state.data?.channels ?? []).filter((channel) => {
+     if (group && channel.group !== group) return false;
+     if (retainedFilter.checked && !channel.keepPast) return false;
++    if (hiddenFilter.checked && !channel.hidden) return false;
+     return !query || searchValue(channel.name).includes(query);
+   });
+   list.replaceChildren();
+@@ -383,9 +400,7 @@ async function mutateChannel(channel, method, body, success, focusTarget) {
+   const message = byId("settings-message");
+   state.pendingChannels.add(channel.id);
+   setMessage(message);
+-  const row = [...byId("roster-list").children].find((candidate) => {
+-    return candidate.querySelector(".roster-switch")?.dataset.toggle === channel.id;
+-  });
++  const row = [...byId("roster-list").children].find((candidate) => candidate.dataset.channelId === channel.id);
+   row?.querySelectorAll("input, button").forEach((control) => {
+     control.disabled = true;
+   });
+@@ -395,13 +410,18 @@ async function mutateChannel(channel, method, body, success, focusTarget) {
+       method,
+       ...(body && { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+     });
++    const current = state.data.channels.find(({ id }) => id === channel.id);
+     if (method === "DELETE") {
+-      state.data.channels = state.data.channels.filter(({ id }) => id !== channel.id);
++      if (channel.custom) {
++        state.data.channels = state.data.channels.filter(({ id }) => id !== channel.id);
++      } else if (current) {
++        current.hidden = true;
++      }
+       state.data.streams = state.data.streams.filter(({ channelId }) => channelId !== channel.id);
+-    } else {
+-      const current = state.data.channels.find(({ id }) => id === channel.id);
+-      if (current) current.keepPast = body.keepPast;
++    } else if (current) {
++      Object.assign(current, body);
+     }
++    updateChannelControls(state.data.channels);
+     setMessage(message, success);
+     await loadSchedule();
+   } catch (error) {
+@@ -444,6 +464,7 @@ scheduleGroup.addEventListener("change", renderSchedule);
+ rosterSearch.addEventListener("input", () => renderRoster());
+ rosterGroup.addEventListener("change", () => renderRoster());
+ retainedFilter.addEventListener("change", () => renderRoster());
++hiddenFilter.addEventListener("change", () => renderRoster());
+ 
+ form.addEventListener("submit", async (event) => {
+   event.preventDefault();
+diff --git a/public/index.html b/public/index.html
+index 8da917b..4dc49c1 100644
+--- a/public/index.html
++++ b/public/index.html
+@@ -95,7 +95,7 @@
+           <div class="card-icon" aria-hidden="true"><span class="settings-icon">⚙︎</span></div>
+           <h2 id="settings-heading">チャンネル設定</h2>
+           <p>過去の配信は終了から24時間で非表示になります。残したいチャンネルを選べます。</p>
+-          <div class="sidebar-meta"><span>登録チャンネル</span><strong id="channel-count">—</strong></div>
++          <div class="sidebar-meta"><span>表示中のチャンネル</span><strong id="channel-count">—</strong></div>
+           <button class="button secondary settings-button" type="button" data-open-settings>チャンネルを管理 <span aria-hidden="true">↗</span></button>
+         </section>
+       </aside>
+@@ -111,7 +111,7 @@
+     <div class="dialog-header">
+       <div>
+         <h2 id="dialog-heading">チャンネル設定</h2>
+-        <p id="dialog-description">「過去の配信を残す」を有効にすると、このチャンネルの配信は24時間経過後も表示されます。</p>
++        <p id="dialog-description">チャンネルごとに配信を非表示にしたり、終了から24時間経った配信を残したりできます。</p>
+       </div>
+       <form method="dialog"><button class="button icon-button" aria-label="閉じる" type="submit">×</button></form>
+     </div>
+@@ -127,7 +127,10 @@
+           <select id="roster-group"><option value="">すべてのグループ</option></select>
+         </label>
+       </div>
+-      <label class="retained-filter"><input id="roster-retained" type="checkbox">過去の配信を残すチャンネルのみ表示</label>
++      <div class="roster-filters">
++        <label class="retained-filter"><input id="roster-retained" type="checkbox">過去の配信を残すチャンネルのみ</label>
++        <label class="retained-filter"><input id="roster-hidden" type="checkbox">非表示のチャンネルのみ</label>
++      </div>
+       <p id="settings-message" class="form-message" role="status" hidden></p>
+       <ul id="roster-list" class="roster-list" aria-label="登録チャンネル"></ul>
+     </div>
+diff --git a/public/styles.css b/public/styles.css
+index 27a07e4..ff2a21a 100644
+--- a/public/styles.css
++++ b/public/styles.css
+@@ -194,6 +194,7 @@ dialog::backdrop { background: #14282066; }
+ .icon-button:hover { background: var(--mint); }
+ .dialog-content { padding: 15px 22px 22px; overflow: auto; }
+ .dialog-filters { margin-bottom: 12px; }
++.roster-filters { display: flex; gap: 3px 16px; flex-wrap: wrap; }
+ .retained-filter { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: .8rem; }
+ .retained-filter input { accent-color: var(--green); width: 16px; height: 16px; }
+ #settings-message { margin-top: 9px; }
+@@ -206,12 +207,14 @@ dialog::backdrop { background: #14282066; }
+ .roster-name { font-size: .9rem; font-weight: 750; text-decoration: none; }
+ .roster-name:hover { text-decoration: underline; }
+ .roster-group { display: block; margin-top: 3px; color: var(--muted); font-size: .73rem; }
++.hidden-badge { display: inline-block; margin-inline-start: 6px; padding: 1px 4px; border-radius: 4px; background: #edf0ee; color: #515e57; }
+ .roster-switch-label { display: flex; align-items: center; gap: 7px; font-size: .76rem; color: #334239; cursor: pointer; }
+ .roster-switch { appearance: none; position: relative; width: 35px; height: 20px; margin: 0; border: 1px solid #8d9c92; border-radius: 10px; background: #e8ede8; cursor: pointer; }
+ .roster-switch::after { position: absolute; content: ""; left: 2px; top: 2px; width: 14px; height: 14px; border-radius: 50%; background: #68796e; transition: transform .15s; }
+ .roster-switch:checked { background: var(--green); border-color: var(--green); }
+ .roster-switch:checked::after { transform: translateX(15px); background: #fff; }
+-.remove-button { min-height: 30px; padding: 3px 7px; border-color: var(--border); background: white; color: var(--red); font-size: .72rem; }
++.roster-action { min-width: 49px; min-height: 32px; padding: 4px 7px; font-size: .72rem; }
++.remove-button { border-color: var(--border); background: white; color: var(--red); }
+ .remove-button:hover:not(:disabled) { background: var(--red-bg); }
+ .roster-empty { padding: 18px 0; color: var(--muted); font-size: .83rem; }
+ 
+diff --git a/src/data/hololive-roster.mjs b/src/data/hololive-roster.mjs
+index d53d37f..8f73a3c 100644
+--- a/src/data/hololive-roster.mjs
++++ b/src/data/hololive-roster.mjs
+@@ -1,11 +1,14 @@
+ // Official roster: https://hololive.hololivepro.com/talents/
+-// Cross-checked against the August 2026 official roster mirror and November 2026 channel lists.
++// Cross-checked against the official Japanese roster on 2026-11-20.
+ // https://github.com/prayzero/hololive-schedule/blob/main/public/data/talents.json
+ // https://github.com/seangcs27/dossier/blob/master/scripts/lib/holodori-outside.mjs
+ // https://github.com/physicsdog0505/HoloViewer/blob/main/data/search/member_aliases.v1.json
+ // Each row is a YouTube channel, with alternate names used by the official schedule.
++export const officialHololiveChannelId = 'UCJFZiqLMntJufDCHc6bQixg';
++
+ export const rosterGroups = {
+   "ホロライブ JP": [
++    [officialHololiveChannelId, "ホロライブ公式", ["ホロライブ", "hololive"], null, "official"],
+     ["UCp6993wxpyDPHUpavwDFqgg","ときのそら",["Tokino Sora","Sora","そら","そらちゃん"],"https://hololive.hololivepro.com/wp-content/uploads/2021/05/tokino_sora_thumb.png"],
+     ["UCDqI2jOz0weumE8s7paEk6g","ロボ子さん",["Robocosan","Roboco-san","Roboco","ロボ子"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Robocosan_list_thumb.png"],
+     ["UC-hM6YJuNYVAmUWxeIr9FeA","さくらみこ",["Sakura Miko","Miko","Mikochi","みこ","みこち"],"https://hololive.hololivepro.com/wp-content/uploads/2020/06/Sakura-Miko_list_thumb.png"],
+@@ -37,10 +40,11 @@ export const rosterGroups = {
+     ["UC6eWCld0KwmyHFbAqK3V-Rw","博衣こより",["Hakui Koyori","Koyori","Koyo","こより","こよ"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Hakui-Koyori_list_thumb.png"],
+     ["UC_vMYWcDjmfdpH6r4TTn1MQ","風真いろは",["Kazama Iroha","Iroha","いろは","ござる"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Kazama-Iroha_list_thumb.png"],
+     ["UCIBY1ollUsauvVi4hW4cumw","沙花叉クロヱ",["Sakamata Chloe","Chloe","Sakamata","クロヱ","クロエ","沙花叉"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Sakamata-Chloe_list_thumb.png","affiliate"],
+-    ["UC8eitCE9Z6EwUCs-VUi1blg","Achichi Mela",["Mela","メラ"],null],
+-    ["UCy9mgxB8pn2C4aNK_MPthDQ","Sorashina Sopia",["Sopia","ソピア"],null],
+-    ["UCROQtXcp2loQEmvpe5rhJzQ","Suzuna Tsuzuri",["Tsuzuri","つづり","ツヅリ"],null],
+-    ["UCSjQDxud2HkAO2DVD3lwxmw","百灯キョーコ",["Hyakuto Kyoko","Kyoko","キョーコ"],null],
++    ["UC8eitCE9Z6EwUCs-VUi1blg","熱千めら",["Achichi Mela","Mela","めら","メラ"],"https://hololive.hololivepro.com/wp-content/uploads/2023/09/Achichi-Mela_list_thumb.png"],
++    ["UCy9mgxB8pn2C4aNK_MPthDQ","宙科そぴあ",["Sorashina Sopia","Sopia","そぴあ","ソピア"],"https://hololive.hololivepro.com/wp-content/uploads/2023/09/Sorashina-Sopia_list_thumb.png"],
++    ["UCROQtXcp2loQEmvpe5rhJzQ","鈴鳴つづり",["Suzuna Tsuzuri","Tsuzuri","つづり","ツヅリ"],"https://hololive.hololivepro.com/wp-content/uploads/2023/09/Suzuna-Tsuzuri_list_thumb.png"],
++    ["UCSjQDxud2HkAO2DVD3lwxmw","百灯キョーコ",["Hyakuto Kyoko","Kyoko","キョーコ"],"https://hololive.hololivepro.com/wp-content/uploads/2023/09/Hyakuto-Kyoko_list_thumb.png"],
++    ["UCozx5csNhCx1wsVq3SZVkBQ","holoAN room（ホロアナ）",["holoAN room","holoAN","ホロアナ","井月みちる","花園さやか","風白ゆき","Izuki Michiru","Hanazono Sayaka","Kazeshiro Yuki"],"https://yt3.ggpht.com/bLqkQmKBq5rRp53-TLpg1wa9Bn0aFwmjsnZ6LTPgq0NjJSs2304Rm61481alRP8mTdyNLFiJ9c0=s88-c-k-c0x00ffffff-no-rj"],
+   ],
+   "ホロライブ ID": [
+     ["UCOyYb1c43VlX9rc_lT6NKQw","Ayunda Risu",["アユンダ・リス","Risu","リス"],"https://hololive.hololivepro.com/wp-content/uploads/2020/07/Ayunda-Risu_list_thumb.png"],
+diff --git a/src/hololive.mjs b/src/hololive.mjs
+index 789595a..be7e281 100644
+--- a/src/hololive.mjs
++++ b/src/hololive.mjs
+@@ -1,5 +1,5 @@
+-import { rosterGroups } from './data/hololive-roster.mjs';
+-import { getYouTubeVideos } from './youtube.mjs';
++import { officialHololiveChannelId, rosterGroups } from './data/hololive-roster.mjs';
++import { getYouTubeChannel, getYouTubeVideos } from './youtube.mjs';
+ 
+ const officialUrl = 'https://schedule.hololive.tv/';
+ const hour = 60 * 60 * 1000;
+@@ -12,6 +12,7 @@ const groups = Object.entries(rosterGroups).flatMap(([group, rows]) => rows.map(
+ ));
+ const roster = groups.map(({ channel }) => channel);
+ const channelsById = new Map(roster.map((channel) => [channel.id, channel]));
++const officialChannel = channelsById.get(officialHololiveChannelId);
+ const videoCaches = new WeakMap();
+ 
+ function decodeText(value) {
+@@ -36,14 +37,6 @@ function nameKey(name) {
+ const channelsByName = new Map(groups.flatMap(({ channel, aliases }) =>
+   [channel.name, ...aliases].map((name) => [nameKey(name), channel])));
+ 
+-function findChannel(name) {
+-  const key = nameKey(name);
+-  const direct = channelsByName.get(key);
+-  if (direct) return direct;
+-  const asobiName = key.match(/(?:メラ|ソピア|つづり|ツヅリ)$/)?.[0];
+-  return asobiName ? channelsByName.get(asobiName) : null;
+-}
+-
+ function attributes(tag) {
+   const entries = {};
+   for (const match of tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g)) {
+@@ -121,7 +114,7 @@ export function parseOfficialSchedule(html, now = Date.now()) {
+       const id = youtubeId(attrs.href);
+       if (!id) continue;
+       const card = rest().split(/<\/a>/i, 1)[0];
+-      const channel = findChannel(cardField(card, 'name'));
++      const channel = channelsByName.get(nameKey(cardField(card, 'name')));
+       if (!channel) continue;
+       const [, hours, minutes] = cardField(card, 'datetime').match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/) ?? [];
+       if (!date || !hours) throw new Error('ホロジュールの配信日時を読み取れませんでした。');
+@@ -190,29 +183,45 @@ async function enrichAvailable(records, fetchImpl, time, apiKey) {
+   return { streams, incomplete };
+ }
+ 
++async function readOfficialSchedule(fetchImpl, time, apiKey) {
++  const response = await fetchImpl(officialUrl, {
++    headers: { Accept: 'text/html', 'Accept-Language': 'ja', Cookie: 'timezone=Asia/Tokyo' },
++    signal: AbortSignal.timeout(8000),
++  });
++  if (!response.ok) throw new Error(`HTTP ${response.status}`);
++  const records = parseOfficialSchedule(await response.text(), time);
++  return enrichAvailable(records, fetchImpl, time, apiKey);
++}
++
++async function readOfficialChannel(fetchImpl, apiKey) {
++  const channel = await getYouTubeChannel(officialChannel.url, { fetchImpl, apiKey });
++  if (channel.channelId !== officialChannel.id) throw new Error('公式チャンネルのIDが一致しません。');
++  return channel;
++}
++
+ export async function getHololive({ fetchImpl = fetch, now = Date.now, apiKey = process.env.YOUTUBE_API_KEY } = {}) {
+-  let records;
+-  const time = now();
+-  try {
+-    const response = await fetchImpl(officialUrl, {
+-      headers: { Accept: 'text/html', 'Accept-Language': 'ja', Cookie: 'timezone=Asia/Tokyo' },
+-      signal: AbortSignal.timeout(8000),
+-    });
+-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+-    records = parseOfficialSchedule(await response.text(), time);
+-  } catch {
+-    return {
+-      channels: roster,
+-      streams: [],
+-      scheduleAvailable: false,
+-      warning: '公式ホロジュールに接続できないか、配信一覧を読み取れませんでした。',
+-    };
+-  }
+-  const { streams, incomplete } = await enrichAvailable(records, fetchImpl, time, apiKey);
++  const [scheduleResult, channelResult] = await Promise.allSettled([
++    readOfficialSchedule(fetchImpl, now(), apiKey),
++    readOfficialChannel(fetchImpl, apiKey),
++  ]);
++  const schedule = scheduleResult.status === 'fulfilled' ? scheduleResult.value : null;
++  const channel = channelResult.status === 'fulfilled' ? channelResult.value : null;
++  const warnings = [];
++  if (!schedule) warnings.push('公式ホロジュールに接続できないか、配信一覧を読み取れませんでした。');
++  else if (schedule.incomplete) warnings.push('一部の配信は公式ホロジュールの時刻と配信中表示で分類しています。');
++  if (!channel || channel.warning) warnings.push('ホロライブ公式の YouTube チャンネルから配信一覧を取得できませんでした。');
++
++  const streams = new Map((schedule?.streams ?? []).map((stream) => [stream.id, stream]));
++  for (const stream of channel?.streams ?? []) streams.set(stream.id, { ...stream, channelId: officialChannel.id });
++
++  const updatedChannelIds = schedule ? roster.filter(({ id }) => id !== officialChannel.id).map(({ id }) => id) : [];
++  if (channel && !channel.warning) updatedChannelIds.push(officialChannel.id);
++
+   return {
+     channels: roster,
+-    streams,
+-    scheduleAvailable: true,
+-    ...(incomplete ? { warning: '一部の配信は公式ホロジュールの時刻と配信中表示で分類しています。' } : {}),
++    streams: [...streams.values()],
++    scheduleAvailable: Boolean(schedule),
++    updatedChannelIds,
++    warnings,
+   };
+ }
+diff --git a/src/schedule.mjs b/src/schedule.mjs
+index 3460423..54eeed8 100644
+--- a/src/schedule.mjs
++++ b/src/schedule.mjs
+@@ -43,7 +43,7 @@ function mergeStreams(existing, incoming, time) {
+ }
+ 
+ export function createScheduleService({ file, getHololive, getYouTubeChannel, normalizeChannelUrl, now = Date.now }) {
+-  let state = readState(file);
++  let state = { hidden: [], ...readState(file) };
+   let lastAttempt = null;
+   let warnings = [];
+   let refreshing;
+@@ -81,12 +81,15 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
+     }));
+ 
+     const official = await hololive;
+-    const activeCustom = new Set(state.custom.map(({ id }) => id));
+     const officialWarnings = official?.warnings ?? (official?.warning ? [official.warning] : []);
+     const officialReady = official !== null && (official.scheduleAvailable ?? (officialWarnings.length === 0));
+     const roster = official?.channels?.length ? official.channels : state.roster;
++    const presetIds = new Set(roster.map(({ id }) => id));
++    const custom = state.custom.filter(({ id }) => !presetIds.has(id));
++    const activeCustom = new Set(custom.map(({ id }) => id));
+     const updatedChannels = new Set(successful);
+-    if (officialReady) for (const { id } of roster) updatedChannels.add(id);
++    const officialUpdated = official?.updatedChannelIds ?? (officialReady ? presetIds : []);
++    for (const id of officialUpdated) updatedChannels.add(id);
+     const incoming = [
+       ...(official?.streams ?? []),
+       ...customStreams.filter(({ channelId }) => activeCustom.has(channelId)),
+@@ -95,10 +98,10 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
+     const existing = state.streams.filter((stream) =>
+       stream.status === 'past' || incomingIds.has(stream.id) || !updatedChannels.has(stream.channelId));
+     const streams = mergeStreams(existing, incoming, now());
+-    const updatedAt = officialReady || [...successful].some((id) => activeCustom.has(id))
++    const updatedAt = officialReady || official?.updatedChannelIds?.length || [...successful].some((id) => activeCustom.has(id))
+       ? new Date(now()).toISOString()
+       : state.updatedAt;
+-    save({ ...state, roster, streams, updatedAt });
++    save({ ...state, roster, custom, streams, updatedAt });
+     warnings = [
+       ...(official === null ? ['ホロライブの配信情報を取得できませんでした。'] : officialWarnings),
+       ...failures.filter(({ id }) => activeCustom.has(id))
+@@ -118,11 +121,15 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
+     const channels = [
+       ...state.roster.map((channel) => ({ ...channel, custom: false })),
+       ...state.custom.map((channel) => ({ ...channel, custom: true })),
+-    ].map((channel) => ({ ...channel, keepPast: state.preferences[channel.id] === true }));
++    ].map((channel) => ({
++      ...channel,
++      keepPast: state.preferences[channel.id] === true,
++      hidden: state.hidden.includes(channel.id),
++    }));
+ 
+     return {
+       channels,
+-      streams: retainStreams(state.streams, channels, state.preferences, now()),
++      streams: retainStreams(state.streams, channels.filter(({ hidden }) => !hidden), state.preferences, now()),
+       warnings,
+       updatedAt: state.updatedAt ?? null,
+     };
+@@ -152,6 +159,9 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
+ 
+     if ([...state.roster, ...state.custom].some((channel) => channel.id === result.channelId ||
+       channel.url === url)) {
++      if (state.hidden.includes(result.channelId)) {
++        throw new ScheduleError(409, 'このチャンネルは非表示です。チャンネル設定から元に戻せます。');
++      }
+       throw new ScheduleError(409, 'このチャンネルはすでに登録されています。');
+     }
+ 
+@@ -159,7 +169,7 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
+     if (result.avatar) channel.avatar = result.avatar;
+     const streams = mergeStreams(state.streams, result.streams.map((stream) => ({ ...stream, channelId: channel.id })), now());
+     save({ ...state, custom: [...state.custom, channel], streams, updatedAt: new Date(now()).toISOString() });
+-    return { ...channel, custom: true, keepPast: false };
++    return { ...channel, custom: true, keepPast: false, hidden: false };
+   }
+ 
+   function setKeepPast(id, keepPast) {
+@@ -171,15 +181,26 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
+   }
+ 
+   function removeChannel(id) {
++    if (state.roster.some((channel) => channel.id === id)) {
++      if (!state.hidden.includes(id)) save({ ...state, hidden: [...state.hidden, id] });
++      return;
++    }
+     if (!state.custom.some((channel) => channel.id === id)) {
+-      throw new ScheduleError(404, '追加したチャンネルが見つかりませんでした。');
++      throw new ScheduleError(404, 'チャンネルが見つかりませんでした。');
+     }
+     const preferences = { ...state.preferences };
+     delete preferences[id];
+     save({ ...state, custom: state.custom.filter((channel) => channel.id !== id), preferences });
+   }
+ 
+-  return { refresh, snapshot, addChannel, setKeepPast, removeChannel };
++  function restoreChannel(id) {
++    if (!state.roster.some((channel) => channel.id === id)) {
++      throw new ScheduleError(404, '初期登録チャンネルが見つかりませんでした。');
++    }
++    save({ ...state, hidden: state.hidden.filter((hiddenId) => hiddenId !== id) });
++  }
++
++  return { refresh, snapshot, addChannel, setKeepPast, removeChannel, restoreChannel };
+ }
+ 
+ export { REFRESH_INTERVAL };
+diff --git a/src/server.mjs b/src/server.mjs
+index ae3f079..57a3814 100644
+--- a/src/server.mjs
++++ b/src/server.mjs
+@@ -1,3 +1,4 @@
++import { spawn } from 'node:child_process';
+ import { createServer } from 'node:http';
+ import { readFile } from 'node:fs/promises';
+ import { resolve } from 'node:path';
+@@ -86,7 +87,8 @@ export function createApp({
+       const channel = /^\/api\/channels\/([A-Za-z0-9_-]+)$/.exec(url.pathname);
+       if (channel && request.method === 'PATCH') {
+         const body = await readJson(request);
+-        schedule.setKeepPast(channel[1], body.keepPast);
++        if (body.hidden === false) schedule.restoreChannel(channel[1]);
++        else schedule.setKeepPast(channel[1], body.keepPast);
+         return json(response, 200, { ok: true });
+       }
+       if (channel && request.method === 'DELETE') {
+@@ -113,7 +115,24 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
+     schedule.refresh().catch((error) => console.error('Schedule refresh failed:', error));
+   }
+   server.listen(port, host, () => {
+-    console.log(`YouTube Schedule is running on http://${host}:${server.address().port}`);
++    const { address, port: boundPort } = server.address();
++    const loopback = { '0.0.0.0': '127.0.0.1', '::': '::1' };
++    const localAddress = loopback[address] ?? address;
++    const browserHost = localAddress.includes(':') ? `[${localAddress}]` : localAddress;
++    const url = `http://${browserHost}:${boundPort}`;
++    console.log(`配信日和を開くには、ブラウザで ${url} にアクセスしてください。`);
++    if (process.argv.includes('--open')) {
++      const commands = {
++        darwin: ['open', url],
++        win32: ['rundll32.exe', 'url.dll,FileProtocolHandler', url],
++      };
++      const [command, ...args] = commands[process.platform] ?? ['xdg-open', url];
++      const browser = spawn(command, args, { stdio: 'ignore' });
++      const showAddress = () => console.error(`ブラウザの自動起動に失敗しました。${url} を開いてください。`);
++      browser.on('error', showAddress);
++      browser.on('exit', (code) => { if (code !== 0) showAddress(); });
++      browser.unref();
++    }
+     refresh();
+   });
+   const timer = setInterval(refresh, REFRESH_INTERVAL);
+diff --git a/test/hololive.test.mjs b/test/hololive.test.mjs
+index 31d2eaf..bd7fc90 100644
+--- a/test/hololive.test.mjs
++++ b/test/hololive.test.mjs
+@@ -4,6 +4,7 @@ import { getHololive, parseOfficialSchedule } from '../src/hololive.mjs';
+ 
+ const now = () => Date.parse('2026-12-31T16:00:00Z');
+ const soraId = 'UCp6993wxpyDPHUpavwDFqgg';
++const flagshipId = 'UCJFZiqLMntJufDCHc6bQixg';
+ 
+ function card(id, name, time, attrs = '', href = `https://www.youtube.com/watch?v=${id}`) {
+   return `<a class="thumbnail" href="${href}" ${attrs}>
+@@ -18,6 +19,18 @@ function schedule(body) {
+   return `<!doctype html><div class="tab-pane show active" id="all">${body}</div>`;
+ }
+ 
++function flagshipChannel(entries = []) {
++  const data = {
++    metadata: { channelMetadataRenderer: { title: 'hololive ホロライブ', externalId: flagshipId } },
++    contents: {
++      twoColumnBrowseResultsRenderer: {
++        tabs: [{ tabRenderer: { title: 'Live', selected: true, content: entries } }],
++      },
++    },
++  };
++  return new Response(`<script>var ytInitialData = ${JSON.stringify(data)};</script>`);
++}
++
+ test('reads JST date groups across New Year, live indicators and public YouTube channel cards', () => {
+   const rows = parseOfficialSchedule(schedule(`
+     <div class="holodule navbar-text">12/31 (木)</div>
+@@ -25,6 +38,9 @@ test('reads JST date groups across New Year, live indicators and public YouTube
+     <div class="holodule navbar-text">01/01 (金)</div>
+     ${card('livestream1', 'Calli', '00:30', 'style="border: 3px red solid;"')}
+     ${card('future12345', 'FUWAMOCO', '07:05', '', 'https://youtu.be/future12345')}
++    ${card('flagship123', 'ホロライブ', '09:00')}
++    ${card('holoan12345', 'holoAN room', '09:05')}
++    ${card('asobimela12', '熱千めら', '09:10')}
+     ${card('exclude1234', 'アステル・レダ', '08:00')}
+     ${card('notyoutube1', '小鳥遊キアラ', '08:00', '', 'https://example.org/livestream')}
+   `), now());
+@@ -32,7 +48,12 @@ test('reads JST date groups across New Year, live indicators and public YouTube
+     { title: 'Black & White', status: 'past', startAt: '2026-12-31T14:00:00.000Z' },
+     { title: 'Mori Calliope の配信', status: 'live', startAt: '2026-12-31T15:30:00.000Z' },
+     { title: 'FUWAMOCO の配信', status: 'upcoming', startAt: '2026-12-31T22:05:00.000Z' },
++    { title: 'ホロライブ公式 の配信', status: 'upcoming', startAt: '2027-01-01T00:00:00.000Z' },
++    { title: 'holoAN room（ホロアナ） の配信', status: 'upcoming', startAt: '2027-01-01T00:05:00.000Z' },
++    { title: '熱千めら の配信', status: 'upcoming', startAt: '2027-01-01T00:10:00.000Z' },
+   ]);
++  assert.equal(rows[3].channelId, flagshipId);
++  assert.equal(rows[4].channelId, 'UCozx5csNhCx1wsVq3SZVkBQ');
+ });
+ 
+ test('adds YouTube’s title and actual completion time to official cards', async () => {
+@@ -44,7 +65,16 @@ test('adds YouTube’s title and actual completion time to official cards', asyn
+       if (url === 'https://schedule.hololive.tv/') {
+         return new Response(schedule(`<div class="navbar-text holodule">12/31</div>${card(id, 'ときのそら', '23:00')}`));
+       }
++      if (url.hostname === 'www.youtube.com') return flagshipChannel();
+       assert.equal(url.hostname, 'www.googleapis.com');
++      if (url.pathname.endsWith('/channels')) {
++        return Response.json({ items: [{
++          id: flagshipId,
++          snippet: { title: 'hololive ホロライブ' },
++          contentDetails: { relatedPlaylists: { uploads: 'UUJFZiqLMntJufDCHc6bQixg' } },
++        }] });
++      }
++      if (url.pathname.endsWith('/playlistItems')) return Response.json({ items: [] });
+       assert.equal(url.searchParams.get('id'), id);
+       return Response.json({ items: [{
+         id,
+@@ -54,22 +84,67 @@ test('adds YouTube’s title and actual completion time to official cards', asyn
+     },
+   });
+   assert.equal(result.scheduleAvailable, true);
+-  assert.equal(result.warning, undefined);
++  assert.deepEqual(result.warnings, []);
+   assert.equal(result.streams[0].title, '年越し配信');
+   assert.equal(result.streams[0].channelId, soraId);
+   assert.equal(result.streams[0].endAt, '2026-12-31T15:30:00.000Z');
+ });
+ 
+ test('distinguishes valid empty listings from failure and retains the complete roster', async () => {
+-  const empty = await getHololive({ fetchImpl: async () => new Response(schedule('')) });
+-  const blocked = await getHololive({ fetchImpl: async () => new Response('Forbidden', { status: 403 }) });
++  const empty = await getHololive({
++    apiKey: null,
++    fetchImpl: async (url) => typeof url === 'string' ? new Response(schedule('')) : flagshipChannel(),
++  });
++  const blocked = await getHololive({ apiKey: null, fetchImpl: async () => new Response('Forbidden', { status: 403 }) });
+   assert.equal(empty.scheduleAvailable, true);
+   assert.equal(blocked.scheduleAvailable, false);
+   assert.deepEqual(empty.streams, []);
+   assert.deepEqual(blocked.streams, []);
+-  assert.equal(empty.warning, undefined);
+-  assert.ok(blocked.warning);
+-  assert.equal(empty.channels.length, 68);
++  assert.deepEqual(empty.warnings, []);
++  assert.equal(blocked.warnings.length, 2);
++  assert.equal(empty.channels.length, 70);
+   assert.deepEqual(blocked.channels, empty.channels);
+   assert.equal(empty.channels.filter(({ name }) => name === 'FUWAMOCO').length, 1);
++  assert.equal(empty.channels.find(({ id }) => id === flagshipId)?.affiliation, 'official');
++  assert.equal(empty.updatedChannelIds.length, 70);
++  assert.deepEqual(blocked.updatedChannelIds, []);
++});
++
++test('merges official YouTube-only streams and tracks refresh success independently', async () => {
++  const sharedId = 'flagship123';
++  const youtubeOnlyId = 'youtube1234';
++  const officialSchedule = () => new Response(schedule(
++    `<div class="holodule navbar-text">01/01</div>${card(sharedId, 'ホロライブ', '09:00')}`,
++  ));
++  const listing = () => flagshipChannel([sharedId, youtubeOnlyId].map((id) => ({
++    videoRenderer: {
++      videoId: id,
++      title: { simpleText: `公式配信 ${id}` },
++      upcomingEventData: { startTime: String(Date.parse('2027-01-01T00:00:00Z') / 1000) },
++    },
++  })));
++  const fetchImpl = async (url) => {
++    if (typeof url === 'string') return officialSchedule();
++    if (url.pathname.endsWith('/streams')) return listing();
++    return new Response('Forbidden', { status: 403 });
++  };
++  const merged = await getHololive({ now, apiKey: null, fetchImpl });
++  assert.equal(merged.streams.length, 2);
++  assert.ok(merged.streams.every(({ channelId, title }) => channelId === flagshipId && title.startsWith('公式配信')));
++  assert.ok(merged.updatedChannelIds.includes(flagshipId));
++
++  const scheduleOnly = await getHololive({
++    now, apiKey: null,
++    fetchImpl: async (url) => typeof url === 'string' ? officialSchedule() : new Response('Forbidden', { status: 403 }),
++  });
++  assert.deepEqual(scheduleOnly.streams.map(({ id }) => id), [sharedId]);
++  assert.ok(!scheduleOnly.updatedChannelIds.includes(flagshipId));
++
++  const channelOnly = await getHololive({
++    now, apiKey: null,
++    fetchImpl: async (url) => typeof url === 'string' ? new Response('Forbidden', { status: 403 }) : listing(),
++  });
++  assert.equal(channelOnly.scheduleAvailable, false);
++  assert.equal(channelOnly.streams.length, 2);
++  assert.deepEqual(channelOnly.updatedChannelIds, [flagshipId]);
+ });
+diff --git a/test/schedule.test.mjs b/test/schedule.test.mjs
+index aabe320..44a0a54 100644
+--- a/test/schedule.test.mjs
++++ b/test/schedule.test.mjs
+@@ -75,10 +75,16 @@ test('schedule API exposes all statuses and persists selected retention and adde
+   assert.equal((await request('/api/channels', 'POST', { url: 'https://www.youtube.com/@custom' })).status, 409);
+   assert.equal((await request('/api/channels', 'POST', { url: 'https://www.youtube.com/@other' })).status, 409);
+   assert.equal((await request('/api/channels', 'POST', { url: 'https://example.com/@custom' })).status, 400);
++  assert.equal((await request('/api/channels/official', 'DELETE')).status, 200);
+ 
+   time += 2 * hour;
+   const restarted = await startApp(t, options);
++  const hidden = await (await restarted('/api/schedule')).json();
++  assert.equal(hidden.channels.find(({ id }) => id === official.id).hidden, true);
++  assert.deepEqual(hidden.streams.map(({ id }) => id), ['custom-next']);
++  assert.equal((await restarted('/api/channels/official', 'PATCH', { hidden: false })).status, 200);
+   const snapshot = await (await restarted('/api/schedule')).json();
++  assert.equal(snapshot.channels.find(({ id }) => id === official.id).hidden, false);
+   assert.equal(snapshot.channels.find(({ id }) => id === official.id).keepPast, true);
+   assert.equal(snapshot.channels.find(({ id }) => id === custom.channelId).custom, true);
+   assert.ok(snapshot.streams.some(({ id }) => id === 'recent'));
+-- 
+2.52.0
+
 
