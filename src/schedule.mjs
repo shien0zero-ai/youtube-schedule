@@ -21,10 +21,12 @@ function readState(path) {
   }
 }
 
-export function retainStreams(streams, channels, preferences, time) {
+export function retainStreams(streams, channels, preferences, time, holoduleIds = []) {
   const channelIds = new Set(channels.map(({ id }) => id));
+  const listed = new Set(holoduleIds);
   return streams.filter((stream) => channelIds.has(stream.channelId) && (
     stream.status !== 'past' ||
+    listed.has(stream.id) ||
     preferences[stream.channelId] === true ||
     Date.parse(stream.endAt ?? stream.startAt) > time - DAY
   ));
@@ -43,13 +45,13 @@ function mergeStreams(existing, incoming, time) {
 }
 
 export function createScheduleService({ file, getHololive, getYouTubeChannel, normalizeChannelUrl, now = Date.now }) {
-  let state = { hidden: [], ...readState(file) };
+  let state = { hidden: [], holoduleIds: [], ...readState(file) };
   let lastAttempt = null;
   let warnings = [];
   let refreshing;
 
   function save(next) {
-    next.streams = retainStreams(next.streams, [...next.roster, ...next.custom], next.preferences, now());
+    next.streams = retainStreams(next.streams, [...next.roster, ...next.custom], next.preferences, now(), next.holoduleIds);
     if (JSON.stringify(next) === JSON.stringify(state)) return;
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(`${file}.tmp`, JSON.stringify(next), { mode: 0o600 });
@@ -83,16 +85,20 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     const official = await hololive;
     const officialWarnings = official?.warnings ?? (official?.warning ? [official.warning] : []);
     const officialReady = official !== null && (official.scheduleAvailable ?? (officialWarnings.length === 0));
-    const roster = official?.channels?.length ? official.channels : state.roster;
-    const presetIds = new Set(roster.map(({ id }) => id));
+    const currentRoster = official?.channels?.length ? official.channels : state.roster;
+    const presetIds = new Set(currentRoster.map(({ id }) => id));
+    const previousHoloduleChannels = state.roster.filter(({ id, holodule }) => holodule && !presetIds.has(id));
+    const roster = [...currentRoster, ...previousHoloduleChannels];
     const custom = state.custom.filter(({ id }) => !presetIds.has(id));
     const activeCustom = new Set(custom.map(({ id }) => id));
     const updatedChannels = new Set(successful);
     const officialUpdated = official?.updatedChannelIds ?? (officialReady ? presetIds : []);
     for (const id of officialUpdated) updatedChannels.add(id);
+    if (officialReady) for (const { id } of previousHoloduleChannels) updatedChannels.add(id);
+    const holoduleIds = officialReady ? official?.holoduleIds ?? [] : state.holoduleIds;
     const incoming = [
-      ...(official?.streams ?? []),
       ...customStreams.filter(({ channelId }) => activeCustom.has(channelId)),
+      ...(official?.streams ?? []),
     ];
     const incomingIds = new Set(incoming.map(({ id }) => id));
     const existing = state.streams.filter((stream) =>
@@ -101,7 +107,12 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     const updatedAt = officialReady || official?.updatedChannelIds?.length || [...successful].some((id) => activeCustom.has(id))
       ? new Date(now()).toISOString()
       : state.updatedAt;
-    save({ ...state, roster, custom, streams, updatedAt });
+    const retained = retainStreams(streams, roster, state.preferences, now(), holoduleIds);
+    const retainedChannels = new Set(retained.map(({ channelId }) => channelId));
+    const hidden = new Set(state.hidden);
+    const availableRoster = roster.filter(({ id }) =>
+      presetIds.has(id) || retainedChannels.has(id) || hidden.has(id) || state.preferences[id] === true);
+    save({ ...state, roster: availableRoster, custom, streams, holoduleIds, updatedAt });
     warnings = [
       ...(official === null ? ['ホロライブの配信情報を取得できませんでした。'] : officialWarnings),
       ...failures.filter(({ id }) => activeCustom.has(id))
@@ -129,7 +140,7 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
 
     return {
       channels,
-      streams: retainStreams(state.streams, channels.filter(({ hidden }) => !hidden), state.preferences, now()),
+      streams: retainStreams(state.streams, channels.filter(({ hidden }) => !hidden), state.preferences, now(), state.holoduleIds),
       warnings,
       updatedAt: state.updatedAt ?? null,
     };

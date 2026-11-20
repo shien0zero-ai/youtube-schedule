@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { officialHololiveChannelId, rosterGroups } from './data/hololive-roster.mjs';
 import { getYouTubeChannel, getYouTubeVideos } from './youtube.mjs';
 
@@ -69,21 +70,39 @@ function nearestTokyoDate(month, date, now) {
   return closest?.toISOString().slice(0, 10);
 }
 
-function youtubeId(rawUrl) {
-  let url;
+function publicUrl(value) {
+  if (!value?.trim() || value.startsWith('#')) return null;
   try {
-    url = new URL(rawUrl);
+    const url = new URL(value, officialUrl);
+    return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password ? url : null;
   } catch {
     return null;
   }
-  if (url.protocol !== 'https:') return null;
+}
+
+function youtubeId(url) {
+  if (!url) return null;
   let id;
   if (url.hostname === 'youtu.be') {
-    id = url.pathname.slice(1);
+    id = url.pathname.match(/^\/([^/]+)\/?$/)?.[1];
   } else if (['youtube.com', 'www.youtube.com', 'm.youtube.com'].includes(url.hostname)) {
-    id = url.pathname === '/watch' ? url.searchParams.get('v') : url.pathname.match(/^\/live\/([^/]+)\/?$/)?.[1];
+    id = url.pathname === '/watch' ? url.searchParams.get('v') : url.pathname.match(/^\/(?:live|shorts|embed)\/([^/]+)\/?$/)?.[1];
   }
   return /^[\w-]{11}$/.test(id ?? '') ? id : null;
+}
+
+function identifier(prefix, ...parts) {
+  return prefix + createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 24);
+}
+
+function cardPicture(html) {
+  for (const match of html.matchAll(/<img\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi)) {
+    const attrs = attributes(match[0]);
+    const url = publicUrl(attrs['data-src'] || attrs.src);
+    if (!url || url.pathname.startsWith('/dist/images/icons/') || /^(?:yt3|yt4)\./i.test(url.hostname)) continue;
+    return { url: url.href, title: attrs.alt?.trim() };
+  }
+  return null;
 }
 
 function isLiveCard(attrs) {
@@ -101,43 +120,63 @@ export function parseOfficialSchedule(html, now = Date.now()) {
   if (!pane) throw new Error('ホロジュールの配信一覧が見つかりませんでした。');
 
   const records = new Map();
+  const channels = new Map();
   const content = html.slice(pane.index + pane[0].length);
   let date;
-  for (const match of content.matchAll(/<(div|a)\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi)) {
+  let depth = 1;
+  for (const match of content.matchAll(/<\/?(div|a)\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi)) {
+    const tagName = match[1].toLowerCase();
+    const closing = match[0].startsWith('</');
+    if (tagName === 'div') depth += closing ? -1 : 1;
+    if (depth === 0) break;
+    if (closing) continue;
     const attrs = attributes(match[0]);
     const rest = () => content.slice(match.index + match[0].length);
     if (hasClass(attrs, 'tab-pane')) break;
     if (hasClass(attrs, 'holodule') && hasClass(attrs, 'navbar-text')) {
       const [, month, dayOfMonth] = textContent(rest().split(/<\/div>/i, 1)[0]).match(/(\d{1,2})\s*\/\s*(\d{1,2})/) ?? [];
       date = nearestTokyoDate(Number(month), Number(dayOfMonth), now);
-    } else if (match[1].toLowerCase() === 'a' && hasClass(attrs, 'thumbnail')) {
-      const id = youtubeId(attrs.href);
-      if (!id) continue;
+    } else if (tagName === 'a' && hasClass(attrs, 'thumbnail')) {
+      const link = publicUrl(attrs.href);
+      const videoId = youtubeId(link);
       const card = rest().split(/<\/a>/i, 1)[0];
-      const channel = channelsByName.get(nameKey(cardField(card, 'name')));
-      if (!channel) continue;
+      const name = cardField(card, 'name');
+      const key = nameKey(name);
+      let channel = channelsByName.get(key);
+      if (!channel) {
+        const id = identifier('holodule-', key || name);
+        channel = channels.get(id) ?? {
+          id, name: name || 'ホロジュール', group: 'ホロジュール', holodule: true, url: officialUrl,
+        };
+        channels.set(id, channel);
+      }
       const [, hours, minutes] = cardField(card, 'datetime').match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/) ?? [];
-      if (!date || !hours) throw new Error('ホロジュールの配信日時を読み取れませんでした。');
-      const ms = Date.parse(`${date}T${hours.padStart(2, '0')}:${minutes}:00+09:00`);
-      const title = attrs.title?.trim();
+      const ms = date && hours ? Date.parse(`${date}T${hours.padStart(2, '0')}:${minutes}:00+09:00`) : null;
+      const startAt = ms === null ? null : new Date(ms).toISOString();
+      const picture = cardPicture(card);
+      const title = attrs.title?.trim() || picture?.title || (name ? `${channel.name} の配信` : 'ホロジュールのお知らせ');
+      // Official announcements may repeat a destination, including within one day.
+      const id = videoId ?? identifier('holodule-card-', channel.id, link?.href, startAt, title, picture?.url);
       const record = {
         id,
         channelId: channel.id,
-        title: title || `${channel.name} の配信`,
-        status: isLiveCard(attrs) ? 'live' : ms > now ? 'upcoming' : 'past',
-        startAt: new Date(ms).toISOString(),
+        title,
+        status: isLiveCard(attrs) ? 'live' : ms === null || ms > now ? 'upcoming' : 'past',
+        startAt,
         endAt: null,
-        thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
-        url: `https://www.youtube.com/watch?v=${id}`,
+        platform: videoId ? 'youtube' : link?.hostname.replace(/^www\./, '') ?? null,
+        thumbnail: videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : picture?.url ?? null,
+        url: videoId ? `https://www.youtube.com/watch?v=${videoId}` : link?.href ?? null,
       };
       if (!records.has(id) || record.status === 'live') records.set(id, record);
     }
   }
-  return [...records.values()];
+  return { streams: [...records.values()], channels: [...channels.values()] };
 }
 
 function enrichmentPriority(record, now) {
   if (record.status === 'live') return 0;
+  if (record.startAt === null) return Number.MAX_SAFE_INTEGER;
   return 1 + Math.abs(Date.parse(record.startAt) - now);
 }
 
@@ -148,8 +187,9 @@ async function enrichAvailable(records, fetchImpl, time, apiKey) {
   for (const id of cache.keys()) {
     if (!recordIds.has(id)) cache.delete(id);
   }
-  const candidates = records.filter(({ id, status, startAt }) =>
-    cache.get(id)?.expiresAt > time ? false : status !== 'past' || Date.parse(startAt) > time - day);
+  const candidates = records.filter(({ id, platform, status, startAt }) =>
+    platform === 'youtube' && !(cache.get(id)?.expiresAt > time) &&
+    (status !== 'past' || Date.parse(startAt) > time - day));
   candidates.sort((left, right) => enrichmentPriority(left, time) - enrichmentPriority(right, time));
   const ids = candidates.slice(0, apiKey ? 50 : 12).map(({ id }) => id);
   if (ids.length) {
@@ -163,11 +203,12 @@ async function enrichAvailable(records, fetchImpl, time, apiKey) {
   }
   let incomplete = false;
   const streams = records.map((record) => {
+    if (record.platform !== 'youtube') return record;
     const cached = cache.get(record.id);
     const details = cached?.video;
     if (!details?.status || (record.status === 'past' && !details.endAt)) incomplete = true;
     if (!details) return record;
-    const channel = channelsById.get(details.channelId);
+    const channel = channelsById.has(record.channelId) ? channelsById.get(details.channelId) : null;
     const fresh = cached.expiresAt > time;
     const actualStatus = fresh || details.endAt ? details.status : null;
     return {
@@ -189,8 +230,8 @@ async function readOfficialSchedule(fetchImpl, time, apiKey) {
     signal: AbortSignal.timeout(8000),
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const records = parseOfficialSchedule(await response.text(), time);
-  return enrichAvailable(records, fetchImpl, time, apiKey);
+  const { channels, streams } = parseOfficialSchedule(await response.text(), time);
+  return { channels, ...await enrichAvailable(streams, fetchImpl, time, apiKey) };
 }
 
 async function readOfficialChannel(fetchImpl, apiKey) {
@@ -212,14 +253,18 @@ export async function getHololive({ fetchImpl = fetch, now = Date.now, apiKey = 
   if (!channel || channel.warning) warnings.push('ホロライブ公式の YouTube チャンネルから配信一覧を取得できませんでした。');
 
   const streams = new Map((schedule?.streams ?? []).map((stream) => [stream.id, stream]));
-  for (const stream of channel?.streams ?? []) streams.set(stream.id, { ...stream, channelId: officialChannel.id });
+  for (const stream of channel?.streams ?? []) {
+    streams.set(stream.id, { ...stream, channelId: streams.get(stream.id)?.channelId ?? officialChannel.id, platform: 'youtube' });
+  }
 
-  const updatedChannelIds = schedule ? roster.filter(({ id }) => id !== officialChannel.id).map(({ id }) => id) : [];
+  const channels = [...roster, ...(schedule?.channels ?? [])];
+  const updatedChannelIds = schedule ? channels.filter(({ id }) => id !== officialChannel.id).map(({ id }) => id) : [];
   if (channel && !channel.warning) updatedChannelIds.push(officialChannel.id);
 
   return {
-    channels: roster,
+    channels,
     streams: [...streams.values()],
+    holoduleIds: (schedule?.streams ?? []).map(({ id }) => id),
     scheduleAvailable: Boolean(schedule),
     updatedChannelIds,
     warnings,

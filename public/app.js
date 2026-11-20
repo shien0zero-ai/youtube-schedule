@@ -4,10 +4,24 @@ const statusLabels = {
   past: "配信終了",
 };
 
+const platformLabels = new Map([
+  ["youtube", "YouTube"],
+  ["youtube.com", "YouTube"],
+  ["youtu.be", "YouTube"],
+  ["twitch.tv", "Twitch"],
+  ["twitcasting.tv", "ツイキャス"],
+  ["tiktok.com", "TikTok"],
+  ["bilibili.com", "bilibili"],
+  ["nicovideo.jp", "ニコニコ"],
+  ["spotify.com", "Spotify"],
+  ["x.com", "X"],
+  ["twitter.com", "X"],
+]);
+
 const emptyStates = {
   live: ["配信中のライブはありません", "「今後の配信」から次のライブをチェックできます。"],
   upcoming: ["今後の配信予定はありません", "配信予定が公開されると、ここに表示されます。"],
-  past: ["表示できる過去の配信はありません", "終了から24時間以内の配信と、設定で残した配信が表示されます。"],
+  past: ["表示できる過去の配信はありません", "公式スケジュールに掲載中の過去配信、終了から24時間以内の配信、設定で残した配信が表示されます。"],
 };
 
 const timeZone = "Asia/Tokyo";
@@ -52,13 +66,23 @@ function validDate(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function httpsUrl(value) {
+function webUrl(value) {
   try {
     const url = new URL(value);
-    return url.protocol === "https:" ? url.href : null;
+    if (url.username || url.password) return null;
+    return url.protocol === "https:" || url.protocol === "http:" ? url.href : null;
   } catch {
     return null;
   }
+}
+
+function streamPlatform(platform, url) {
+  const name = platform || (url && new URL(url).hostname) || "";
+  const host = name.toLowerCase().replace(/^www\./, "");
+  for (const [domain, label] of platformLabels) {
+    if (host === domain || host.endsWith("." + domain)) return label;
+  }
+  return name;
 }
 
 function searchValue(value) {
@@ -173,7 +197,7 @@ function stateCard(title, description, { loading = false, action, actionLabel } 
 }
 
 function media(container, source, fallbackText) {
-  const sourceUrl = httpsUrl(source);
+  const sourceUrl = webUrl(source);
   const showFallback = () => container.replaceChildren(element("span", "", fallbackText));
   if (!sourceUrl) {
     showFallback();
@@ -190,7 +214,7 @@ function media(container, source, fallbackText) {
 }
 
 function renderStream(stream, channel) {
-  const streamUrl = httpsUrl(stream.url);
+  const streamUrl = webUrl(stream.url);
   const card = element(streamUrl ? "a" : "article", "stream");
   if (streamUrl) {
     card.href = streamUrl;
@@ -213,6 +237,8 @@ function renderStream(stream, channel) {
     time.dateTime = streamDate.toISOString();
     meta.append(time);
   }
+  const platform = streamPlatform(stream.platform, streamUrl);
+  if (platform) meta.append(element("span", "stream-platform", platform));
   body.append(meta, element("h4", "stream-title", stream.title || "タイトル未定"));
   if (channel?.name) body.append(element("p", "stream-channel", channel.name));
   card.append(preview, body);
@@ -323,7 +349,7 @@ function rosterRow(channel) {
   avatar.setAttribute("aria-hidden", "true");
   media(avatar, channel.avatar, Array.from(channel.name)[0] || "▶");
   const identity = element("div", "roster-identity");
-  const url = httpsUrl(channel.url);
+  const url = webUrl(channel.url);
   const name = element(url ? "a" : "span", "roster-name", channel.name);
   if (url) {
     name.href = url;
@@ -465,6 +491,69 @@ rosterSearch.addEventListener("input", () => renderRoster());
 rosterGroup.addEventListener("change", () => renderRoster());
 retainedFilter.addEventListener("change", () => renderRoster());
 hiddenFilter.addEventListener("change", () => renderRoster());
+
+function addCodespacesHelp(launcher, appUrl) {
+  const style = launcher.createElement("style");
+  style.textContent = `
+    body { margin: 0; padding: 2rem 1.2rem; background: #f8f8f2; color: #202a25; font: 16px/1.7 system-ui, sans-serif; }
+    main { max-width: 36rem; margin: 4vh auto; padding: clamp(1.25rem, 5vw, 2.5rem); border: 1px solid #dce3db; border-radius: 18px; background: #fff; }
+    h1 { margin: 0 0 .6rem; }
+    p { margin: 0 0 1rem; }
+    a { color: #235641; text-underline-offset: .15em; }
+    #open-schedule { display: inline-block; padding: .55rem .9rem; border-radius: 8px; background: #235641; color: #fff; text-decoration: none; font-weight: 700; }
+  `;
+  launcher.head.append(style);
+  launcher.body.innerHTML = `
+    <main>
+      <h1>配信日和</h1>
+      <p><a id="open-schedule" target="_blank" rel="noopener noreferrer">配信日和を開く</a></p>
+      <p>開けない場合は <a href="https://github.com/codespaces" target="_blank" rel="noopener noreferrer">GitHub Codespaces</a> から使っていた Codespace を再開し、アプリを起動してからもう一度開いてください。</p>
+    </main>
+  `;
+  launcher.getElementById("open-schedule").href = appUrl.href;
+
+  const script = launcher.createElement("script");
+  script.textContent = 'window.open(document.getElementById("open-schedule").href, "_blank", "noopener,noreferrer");';
+  launcher.body.append(script);
+}
+
+byId("download-launcher").addEventListener("click", () => {
+  const appUrl = new URL("/", window.location.origin);
+  const launcher = document.implementation.createHTMLDocument("配信日和");
+  launcher.documentElement.lang = "ja";
+
+  const charset = launcher.createElement("meta");
+  charset.setAttribute("charset", "utf-8");
+  launcher.head.prepend(charset);
+  const viewport = launcher.createElement("meta");
+  viewport.name = "viewport";
+  viewport.content = "width=device-width, initial-scale=1";
+  launcher.head.append(viewport);
+
+  if (appUrl.hostname.endsWith(".app.github.dev")) {
+    addCodespacesHelp(launcher, appUrl);
+  } else {
+    const refresh = launcher.createElement("meta");
+    refresh.httpEquiv = "refresh";
+    refresh.content = "0;url=" + appUrl.href;
+    launcher.head.append(refresh);
+
+    const link = launcher.createElement("a");
+    link.href = appUrl.href;
+    link.textContent = "配信日和を開く";
+    launcher.body.append(link);
+  }
+
+  const blob = new Blob(["<!doctype html>\n", launcher.documentElement.outerHTML], { type: "text/html;charset=utf-8" });
+  const downloadUrl = URL.createObjectURL(blob);
+  const download = element("a");
+  download.href = downloadUrl;
+  download.download = "youtube-schedule.html";
+  document.body.append(download);
+  download.click();
+  download.remove();
+  window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+});
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();

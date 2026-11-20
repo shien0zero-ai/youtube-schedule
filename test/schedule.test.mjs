@@ -119,3 +119,37 @@ test('schedule keeps cached data and displays warnings during an upstream failur
   assert.deepEqual(cached.streams, initial.streams);
   assert.equal(cached.updatedAt, initial.updatedAt);
 });
+
+test('shows older Holodule cards while listed and preserves selected unit history afterwards', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'youtube-schedule-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  let time = baseTime;
+  let feed = 'listed';
+  const unit = { id: 'holodule-unit-b', name: 'UNIT B', group: 'ホロジュール', holodule: true };
+  const sources = providers();
+  sources.getHololive = async () => ({
+    channels: feed === 'listed' ? [official, unit] : [official],
+    streams: feed === 'listed' ? [
+      { ...stream('unit-old', 'past', -32, -29), channelId: unit.id },
+      { ...stream('official-old', 'past', -32, -28), channelId: official.id },
+    ] : [],
+    holoduleIds: feed === 'listed' ? ['unit-old', 'official-old'] : [],
+    scheduleAvailable: feed !== 'offline',
+  });
+
+  const request = await startApp(t, { file: join(dir, 'schedule.json'), providers: sources, now: () => time });
+  const initial = await (await request('/api/schedule')).json();
+  assert.deepEqual(initial.streams.map(({ id }) => id), ['unit-old', 'official-old']);
+  assert.equal((await request('/api/channels/holodule-unit-b', 'PATCH', { keepPast: true })).status, 200);
+
+  feed = 'offline';
+  time += 20_000;
+  const cached = await (await request('/api/schedule?refresh=1')).json();
+  assert.deepEqual(cached.streams.map(({ id }) => id), ['unit-old', 'official-old']);
+
+  feed = 'empty';
+  time += 20_000;
+  const after = await (await request('/api/schedule?refresh=1')).json();
+  assert.deepEqual(after.streams.map(({ id }) => id), ['unit-old']);
+  assert.equal(after.channels.find(({ id }) => id === unit.id).keepPast, true);
+});

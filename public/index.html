@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f8f8f2">
-  <meta name="description" content="ホロライブと登録したYouTubeチャンネルのライブ配信スケジュール。">
-  <title>配信日和｜YouTube 配信スケジュール</title>
+  <meta name="description" content="ホロライブ公式スケジュールと追加した YouTube チャンネルのライブ配信予定。">
+  <title>配信日和｜ライブ配信スケジュール</title>
   <link rel="stylesheet" href="/styles.css">
   <script type="module" src="/app.js"></script>
 </head>
@@ -25,9 +25,9 @@
   <main class="shell">
     <section class="hero" aria-labelledby="page-title">
       <div class="hero-content">
-        <p class="hero-label"><span class="hero-signal" aria-hidden="true"></span>YouTube ライブ配信</p>
+        <p class="hero-label"><span class="hero-signal" aria-hidden="true"></span>公開ライブ配信</p>
         <h1 id="page-title">配信スケジュール</h1>
-        <p class="hero-description">ホロライブと登録したチャンネルの配信をまとめてチェック。</p>
+        <p class="hero-description">ホロライブ公式スケジュールと、追加した YouTube チャンネルの配信をまとめてチェック。</p>
       </div>
       <div class="hero-date">
         <span class="hero-date-label">今日の日付 <span>JST</span></span>
@@ -94,7 +94,7 @@
         <section class="sidebar-card" aria-labelledby="settings-heading">
           <div class="card-icon" aria-hidden="true"><span class="settings-icon">⚙︎</span></div>
           <h2 id="settings-heading">チャンネル設定</h2>
-          <p>過去の配信は終了から24時間で非表示になります。残したいチャンネルを選べます。</p>
+          <p>過去の配信は原則24時間表示します。公式スケジュールに掲載中の配信は引き続き表示します。</p>
           <div class="sidebar-meta"><span>表示中のチャンネル</span><strong id="channel-count">—</strong></div>
           <button class="button secondary settings-button" type="button" data-open-settings>チャンネルを管理 <span aria-hidden="true">↗</span></button>
         </section>
@@ -103,15 +103,18 @@
   </main>
 
   <footer class="shell site-footer">
-    <span>配信日和</span>
-    <span>すべての時刻は日本時間（JST）です。</span>
+    <span class="footer-brand">配信日和</span>
+    <div class="footer-tools">
+      <span>すべての時刻は日本時間（JST）です。</span>
+      <button class="launcher-link" id="download-launcher" type="button"><span aria-hidden="true">↓</span> 起動用 HTML をダウンロード</button>
+    </div>
   </footer>
 
   <dialog id="settings-dialog" aria-labelledby="dialog-heading" aria-describedby="dialog-description">
     <div class="dialog-header">
       <div>
         <h2 id="dialog-heading">チャンネル設定</h2>
-        <p id="dialog-description">チャンネルごとに配信を非表示にしたり、終了から24時間経った配信を残したりできます。</p>
+        <p id="dialog-description">チャンネルごとに表示を切り替えたり、通常の表示期間を過ぎた配信を残したりできます。</p>
       </div>
       <form method="dialog"><button class="button icon-button" aria-label="閉じる" type="submit">×</button></form>
     </div>

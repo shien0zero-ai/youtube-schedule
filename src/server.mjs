@@ -107,13 +107,41 @@ export function createApp({
   return { server, schedule };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const { server, schedule } = createApp({ file: process.env.SCHEDULE_DATA_FILE || defaultDataFile });
-  const host = process.env.HOST || '127.0.0.1';
+function openBrowser(url) {
+  const windows = process.platform === 'win32';
+  const commands = {
+    darwin: ['/usr/bin/open', url],
+    win32: [process.env.ComSpec || 'cmd.exe', '/d', '/s', '/c', `start "" "${url}"`],
+  };
+  const [command, ...args] = commands[process.platform] ?? ['xdg-open', url];
+  const browser = spawn(command, args, { stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: windows });
+  const showAddress = () => console.error(`ブラウザの自動起動に失敗しました。${url} を開いてください。`);
+  browser.on('error', showAddress);
+  browser.on('exit', (code) => { if (code !== 0) showAddress(); });
+  browser.unref();
+}
+
+function startServer() {
+  const codespaces = process.env.CODESPACES === 'true';
+  const host = process.env.HOST || (codespaces ? '0.0.0.0' : '127.0.0.1');
   const port = Number(process.env.PORT || 3000);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    console.error('PORT に 0〜65535 の整数を指定してください。');
+    process.exitCode = 1;
+    return;
+  }
+  const { server, schedule } = createApp({ file: process.env.SCHEDULE_DATA_FILE || defaultDataFile });
   function refresh() {
     schedule.refresh().catch((error) => console.error('Schedule refresh failed:', error));
   }
+  server.on('error', (error) => {
+    if (error.code === 'EADDRINUSE') {
+      console.error(`ポート ${port} は使用中です。起動済みのアプリを開くか、PORT を変更してください。`);
+    } else {
+      console.error('配信日和の起動に失敗しました。', error.message);
+    }
+    process.exitCode = 1;
+  });
   server.listen(port, host, () => {
     const { address, port: boundPort } = server.address();
     const loopback = { '0.0.0.0': '127.0.0.1', '::': '::1' };
@@ -121,17 +149,14 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const browserHost = localAddress.includes(':') ? `[${localAddress}]` : localAddress;
     const url = `http://${browserHost}:${boundPort}`;
     console.log(`配信日和を開くには、ブラウザで ${url} にアクセスしてください。`);
-    if (process.argv.includes('--open')) {
-      const commands = {
-        darwin: ['open', url],
-        win32: ['rundll32.exe', 'url.dll,FileProtocolHandler', url],
-      };
-      const [command, ...args] = commands[process.platform] ?? ['xdg-open', url];
-      const browser = spawn(command, args, { stdio: 'ignore' });
-      const showAddress = () => console.error(`ブラウザの自動起動に失敗しました。${url} を開いてください。`);
-      browser.on('error', showAddress);
-      browser.on('exit', (code) => { if (code !== 0) showAddress(); });
-      browser.unref();
+    if (codespaces) {
+      const name = process.env.CODESPACE_NAME;
+      const domain = process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN;
+      if (name && domain) {
+        console.log(`Codespaces でポート ${boundPort} を転送して開く URL: https://${name}-${boundPort}.${domain}`);
+      }
+    } else if (process.argv.includes('--open')) {
+      openBrowser(url);
     }
     refresh();
   });
@@ -139,3 +164,5 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   timer.unref();
   server.on('close', () => clearInterval(timer));
 }
+
+if (import.meta.main) startServer();
