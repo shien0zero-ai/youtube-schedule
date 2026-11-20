@@ -5,6 +5,7 @@ import { getHololive, parseOfficialSchedule } from '../src/hololive.mjs';
 const now = () => Date.parse('2026-12-31T16:00:00Z');
 const soraId = 'UCp6993wxpyDPHUpavwDFqgg';
 const flagshipId = 'UCJFZiqLMntJufDCHc6bQixg';
+const hololiveScheduleUrl = 'https://schedule.hololive.tv/lives/hololive';
 
 function card(id, name, time, attrs = '', href = `https://www.youtube.com/watch?v=${id}`) {
   return `<a class="thumbnail" href="${href}" ${attrs}>
@@ -31,7 +32,7 @@ function flagshipChannel(entries = []) {
   return new Response(`<script>var ytInitialData = ${JSON.stringify(data)};</script>`);
 }
 
-test('reads all Holodule cards with JST dates across New Year and their booking sources', () => {
+test('reads Hololive Holodule cards with JST dates across New Year and their sources', () => {
   const { streams: rows, channels } = parseOfficialSchedule(schedule(`
     <div class="holodule navbar-text">12/31 (木)</div>
     ${card('archive1234', 'ときのそら', '23:00', 'title="Black &amp; White"')}
@@ -41,11 +42,12 @@ test('reads all Holodule cards with JST dates across New Year and their booking 
     ${card('flagship123', 'ホロライブ', '09:00')}
     ${card('holoan12345', 'holoAN room', '09:05')}
     ${card('asobimela12', '熱千めら', '09:10')}
-    ${card('holostars12', 'アステル・レダ', '08:00')}
-    ${card('unitb123456', 'UNIT B', '10:00')}
+    ${card('regloss1234', 'ReGLOSS', '10:00')}
     ${card('notyoutube1', '小鳥遊キアラ', '08:00', '', 'https://www.example.org/livestream')}
     <a class="thumbnail" href="https://www.example.org/announcement"><img src="https://schedule-static.hololive.tv/image/promo.jpg" alt="公演のお知らせ"></a>
     <a class="thumbnail" href="javascript:alert(1)" title="リンクが未定のお知らせ"></a>
+    <div class="holodule navbar-text">01/02 (土)</div>
+    <a class="thumbnail" href="https://www.example.org/announcement"><img src="https://schedule-static.hololive.tv/image/promo.jpg" alt="公演のお知らせ"></a>
   `), now());
   assert.deepEqual(rows.map(({ title, status, startAt }) => ({ title, status, startAt })), [
     { title: 'Black & White', status: 'past', startAt: '2026-12-31T14:00:00.000Z' },
@@ -54,22 +56,29 @@ test('reads all Holodule cards with JST dates across New Year and their booking 
     { title: 'ホロライブ公式 の配信', status: 'upcoming', startAt: '2027-01-01T00:00:00.000Z' },
     { title: 'holoAN room（ホロアナ） の配信', status: 'upcoming', startAt: '2027-01-01T00:05:00.000Z' },
     { title: '熱千めら の配信', status: 'upcoming', startAt: '2027-01-01T00:10:00.000Z' },
-    { title: 'アステル・レダ の配信', status: 'upcoming', startAt: '2026-12-31T23:00:00.000Z' },
-    { title: 'UNIT B の配信', status: 'upcoming', startAt: '2027-01-01T01:00:00.000Z' },
+    { title: 'ReGLOSS の配信', status: 'upcoming', startAt: '2027-01-01T01:00:00.000Z' },
     { title: 'Takanashi Kiara の配信', status: 'upcoming', startAt: '2026-12-31T23:00:00.000Z' },
     { title: '公演のお知らせ', status: 'upcoming', startAt: null },
     { title: 'リンクが未定のお知らせ', status: 'upcoming', startAt: null },
+    { title: '公演のお知らせ', status: 'upcoming', startAt: null },
   ]);
   assert.equal(rows[3].channelId, flagshipId);
   assert.equal(rows[4].channelId, 'UCozx5csNhCx1wsVq3SZVkBQ');
-  const unit = channels.find(({ name }) => name === 'UNIT B');
+  const unit = channels.find(({ name }) => name === 'ReGLOSS');
   assert.equal(unit.holodule, true);
+  assert.equal(unit.holoduleScope, 'hololive');
+  assert.equal(unit.url, hololiveScheduleUrl);
   assert.match(unit.id, /^holodule-[\w-]+$/);
-  assert.equal(rows[7].channelId, unit.id);
-  assert.equal(rows[8].platform, 'example.org');
-  assert.equal(rows[8].url, 'https://www.example.org/livestream');
-  assert.equal(rows[9].thumbnail, 'https://schedule-static.hololive.tv/image/promo.jpg');
-  assert.equal(rows[10].url, null);
+  assert.equal(rows[6].channelId, unit.id);
+  assert.equal(rows[7].platform, 'example.org');
+  assert.equal(rows[7].url, 'https://www.example.org/livestream');
+  assert.equal(rows[7].scheduleDate, undefined);
+  assert.equal(rows[8].thumbnail, 'https://schedule-static.hololive.tv/image/promo.jpg');
+  assert.equal(rows[8].scheduleDate, '2027-01-01');
+  assert.equal(rows[9].url, null);
+  assert.equal(rows[9].scheduleDate, '2027-01-01');
+  assert.equal(rows[10].scheduleDate, '2027-01-02');
+  assert.notEqual(rows[10].id, rows[8].id);
 });
 
 test('adds YouTube’s title and actual completion time to official cards', async () => {
@@ -77,8 +86,10 @@ test('adds YouTube’s title and actual completion time to official cards', asyn
   const result = await getHololive({
     now,
     apiKey: 'test',
-    async fetchImpl(url) {
-      if (url === 'https://schedule.hololive.tv/') {
+    async fetchImpl(url, options) {
+      if (typeof url === 'string') {
+        assert.equal(url, hololiveScheduleUrl);
+        assert.equal(options.redirect, 'error');
         return new Response(schedule(`<div class="navbar-text holodule">12/31</div>${card(id, 'ときのそら', '23:00')}`));
       }
       if (url.hostname === 'www.youtube.com') return flagshipChannel();
@@ -108,11 +119,11 @@ test('adds YouTube’s title and actual completion time to official cards', asyn
 });
 
 test('enriches YouTube only and preserves the source label for newly discovered groups', async () => {
-  const id = 'unitb123456';
+  const id = 'regloss1234';
   const markup = schedule(`
     <div class="navbar-text holodule">01/01</div>
-    ${card(id, 'UNIT B', '08:00')}
-    ${card('radiocard01', 'UNIT B', '09:00', '', 'https://www.joqr.co.jp/qr/program/example/')}
+    ${card(id, 'ReGLOSS', '08:00')}
+    ${card('radiocard01', 'ReGLOSS', '', '', 'https://www.joqr.co.jp/qr/program/example/')}
   `);
   const requests = [];
   const result = await getHololive({
@@ -123,23 +134,40 @@ test('enriches YouTube only and preserves the source label for newly discovered 
       if (url.pathname.endsWith('/streams')) return flagshipChannel();
       requests.push(url.searchParams.get('v'));
       const player = {
-        videoDetails: { videoId: id, channelId: soraId, title: 'UNIT B allocates a stream' },
+        videoDetails: { videoId: id, channelId: soraId, title: 'ReGLOSS allocates a stream' },
         microformat: { playerMicroformatRenderer: { liveBroadcastDetails: { startTimestamp: '2027-01-01T01:00:00Z' } } },
       };
       return new Response(`<script>var ytInitialPlayerResponse = ${JSON.stringify(player)};</script>`);
     },
   });
   assert.deepEqual(requests, [id]);
-  const unit = result.channels.find(({ name }) => name === 'UNIT B');
+  const unit = result.channels.find(({ name }) => name === 'ReGLOSS');
   assert.equal(result.streams.length, 2);
   assert.ok(result.streams.every(({ channelId }) => channelId === unit.id));
   assert.deepEqual(result.holoduleIds, result.streams.map(({ id }) => id));
   assert.ok(result.updatedChannelIds.includes(unit.id));
   assert.equal(result.streams[1].platform, 'joqr.co.jp');
+  assert.equal(result.streams[1].scheduleDate, '2027-01-01');
   assert.equal(
     parseOfficialSchedule(markup, now()).channels[0].id,
-    parseOfficialSchedule(markup.replaceAll('UNIT B', 'unit b'), now()).channels[0].id,
+    parseOfficialSchedule(markup.replaceAll('ReGLOSS', 'regloss'), now()).channels[0].id,
   );
+});
+
+test('does not fall back to the mixed Holodule listing when the Hololive page is unavailable', async () => {
+  const requestedPages = [];
+  const result = await getHololive({
+    apiKey: null,
+    async fetchImpl(url) {
+      if (typeof url !== 'string') return flagshipChannel();
+      requestedPages.push(url);
+      if (url === hololiveScheduleUrl) return new Response('Unavailable', { status: 503 });
+      return new Response(schedule(`<div class="holodule navbar-text">01/01</div>${card('holostars12', 'アステル・レダ', '08:00')}`));
+    },
+  });
+  assert.deepEqual(requestedPages, [hololiveScheduleUrl]);
+  assert.equal(result.scheduleAvailable, false);
+  assert.deepEqual(result.streams, []);
 });
 
 test('distinguishes valid empty listings from failure and retains the complete roster', async () => {

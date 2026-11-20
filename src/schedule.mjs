@@ -129,8 +129,10 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
   }
 
   function snapshot() {
+    // Older cached Holodule channels can be identified when the scoped feed lists them again.
+    const roster = state.roster.filter(({ holodule, holoduleScope }) => !holodule || holoduleScope === 'hololive');
     const channels = [
-      ...state.roster.map((channel) => ({ ...channel, custom: false })),
+      ...roster.map((channel) => ({ ...channel, custom: false })),
       ...state.custom.map((channel) => ({ ...channel, custom: true })),
     ].map((channel) => ({
       ...channel,

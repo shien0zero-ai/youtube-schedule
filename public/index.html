@@ -30,8 +30,14 @@
         <p class="hero-description">ホロライブ公式スケジュールと、追加した YouTube チャンネルの配信をまとめてチェック。</p>
       </div>
       <div class="hero-date">
-        <span class="hero-date-label">今日の日付 <span>JST</span></span>
-        <time id="today-date">—</time>
+        <div class="hero-date-label"><label for="schedule-date">表示する日付</label><span>JST</span></div>
+        <input id="schedule-date" type="date" aria-controls="schedule-panel">
+        <div class="hero-date-shortcuts" role="group" aria-label="日付を切り替える">
+          <button type="button" data-date-offset="-1" aria-pressed="false">昨日</button>
+          <button type="button" data-date-offset="0" aria-pressed="true">今日</button>
+          <button type="button" data-date-offset="1" aria-pressed="false">明日</button>
+          <button type="button" data-date-offset="all" aria-pressed="false">全日程</button>
+        </div>
       </div>
     </section>
 
@@ -51,7 +57,10 @@
 
         <div class="schedule-controls">
           <div class="tabs" role="tablist" aria-label="配信の状態">
-            <button class="tab" type="button" id="tab-live" role="tab" aria-selected="true" aria-controls="schedule-panel" data-status="live">
+            <button class="tab" type="button" id="tab-all" role="tab" aria-selected="true" aria-controls="schedule-panel" data-status="all">
+              すべて<span class="tab-count" id="count-all">—</span>
+            </button>
+            <button class="tab" type="button" id="tab-live" role="tab" aria-selected="false" aria-controls="schedule-panel" tabindex="-1" data-status="live">
               <span class="live-dot" aria-hidden="true"></span>配信中<span class="tab-count" id="count-live">—</span>
             </button>
             <button class="tab" type="button" id="tab-upcoming" role="tab" aria-selected="false" aria-controls="schedule-panel" tabindex="-1" data-status="upcoming">
@@ -75,7 +84,7 @@
           </div>
         </div>
 
-        <div id="schedule-panel" class="schedule-panel" role="tabpanel" aria-labelledby="tab-live" tabindex="0" aria-busy="true"></div>
+        <div id="schedule-panel" class="schedule-panel" role="tabpanel" aria-labelledby="tab-all" tabindex="0" aria-busy="true"></div>
       </section>
 
       <aside class="sidebar" aria-label="チャンネル管理">

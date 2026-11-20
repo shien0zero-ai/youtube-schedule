@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { officialHololiveChannelId, rosterGroups } from './data/hololive-roster.mjs';
 import { getYouTubeChannel, getYouTubeVideos } from './youtube.mjs';
 
-const officialUrl = 'https://schedule.hololive.tv/';
+const officialScheduleUrl = 'https://schedule.hololive.tv/lives/hololive';
 const hour = 60 * 60 * 1000;
 const day = 24 * hour;
 const groups = Object.entries(rosterGroups).flatMap(([group, rows]) => rows.map(
@@ -73,7 +73,7 @@ function nearestTokyoDate(month, date, now) {
 function publicUrl(value) {
   if (!value?.trim() || value.startsWith('#')) return null;
   try {
-    const url = new URL(value, officialUrl);
+    const url = new URL(value, officialScheduleUrl);
     return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password ? url : null;
   } catch {
     return null;
@@ -146,7 +146,8 @@ export function parseOfficialSchedule(html, now = Date.now()) {
       if (!channel) {
         const id = identifier('holodule-', key || name);
         channel = channels.get(id) ?? {
-          id, name: name || 'ホロジュール', group: 'ホロジュール', holodule: true, url: officialUrl,
+          id, name: name || 'ホロジュール', group: 'ホロジュール',
+          holodule: true, holoduleScope: 'hololive', url: officialScheduleUrl,
         };
         channels.set(id, channel);
       }
@@ -156,13 +157,14 @@ export function parseOfficialSchedule(html, now = Date.now()) {
       const picture = cardPicture(card);
       const title = attrs.title?.trim() || picture?.title || (name ? `${channel.name} の配信` : 'ホロジュールのお知らせ');
       // Official announcements may repeat a destination, including within one day.
-      const id = videoId ?? identifier('holodule-card-', channel.id, link?.href, startAt, title, picture?.url);
+      const id = videoId ?? identifier('holodule-card-', channel.id, link?.href, startAt ?? date ?? null, title, picture?.url);
       const record = {
         id,
         channelId: channel.id,
         title,
         status: isLiveCard(attrs) ? 'live' : ms === null || ms > now ? 'upcoming' : 'past',
         startAt,
+        ...(!startAt && date ? { scheduleDate: date } : {}),
         endAt: null,
         platform: videoId ? 'youtube' : link?.hostname.replace(/^www\./, '') ?? null,
         thumbnail: videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : picture?.url ?? null,
@@ -225,8 +227,9 @@ async function enrichAvailable(records, fetchImpl, time, apiKey) {
 }
 
 async function readOfficialSchedule(fetchImpl, time, apiKey) {
-  const response = await fetchImpl(officialUrl, {
+  const response = await fetchImpl(officialScheduleUrl, {
     headers: { Accept: 'text/html', 'Accept-Language': 'ja', Cookie: 'timezone=Asia/Tokyo' },
+    redirect: 'error',
     signal: AbortSignal.timeout(8000),
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);

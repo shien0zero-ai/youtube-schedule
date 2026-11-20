@@ -73,10 +73,15 @@ h1, h2, p { margin: 0; }
 .hero-signal { display: inline-block; width: 8px; height: 8px; background: #b1d9a6; border-radius: 50%; box-shadow: 0 0 0 4px #b1d9a625; }
 .hero h1 { font-size: clamp(2rem, 5vw, 3.4rem); line-height: 1.15; letter-spacing: .015em; font-weight: 850; }
 .hero-description { color: #e1ebdd; font-size: clamp(.83rem, 1.45vw, 1rem); line-height: 1.8; }
-.hero-date { display: grid; align-content: center; flex-shrink: 0; gap: 7px; padding: 15px 19px; border: 1px solid #e3efd766; border-radius: 14px; background: #213f31cf; font-variant-numeric: tabular-nums; }
+.hero-date { display: grid; align-content: center; flex-shrink: 0; gap: 7px; width: 230px; max-width: 100%; padding: 13px 15px; border: 1px solid #e3efd766; border-radius: 14px; background: #213f31cf; font-variant-numeric: tabular-nums; }
 .hero-date-label { display: flex; justify-content: space-between; align-items: center; gap: 20px; font-size: .74rem; color: #e1ebdd; }
 .hero-date-label > span { border: 1px solid #d0e1c875; border-radius: 5px; padding: 1px 4px; font-size: .64rem; }
-.hero-date time { font-weight: 750; font-size: 1.25rem; white-space: nowrap; }
+.hero-date input { min-width: 0; width: 100%; min-height: 39px; padding: 6px 9px; border: 1px solid #d0e1c8; border-radius: 7px; background: #f8fbf2; color: #19392d; font-weight: 750; }
+.hero-date-shortcuts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 1.5fr); gap: 4px; }
+.hero-date-shortcuts button { min-height: 31px; padding: 3px; border: 1px solid #d0e1c875; border-radius: 6px; background: transparent; color: #f8fbf2; font-size: .75rem; font-weight: 700; white-space: nowrap; }
+.hero-date-shortcuts button:hover { background: #ffffff24; }
+.hero-date-shortcuts button[aria-pressed="true"] { background: #e7f1e8; color: #19392d; }
+.hero-date :focus-visible { outline-color: #c2e3b6; }
 
 .dashboard { display: grid; grid-template-columns: minmax(0, 1fr) minmax(250px, 292px); align-items: start; gap: 28px; }
 .schedule { min-width: 0; }
@@ -88,7 +93,7 @@ h1, h2, p { margin: 0; }
 .schedule-alerts ul > li + li { margin-top: 4px; }
 .schedule-controls { display: grid; gap: 15px; margin-bottom: 16px; }
 
-.tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 5px; border: 1px solid var(--border); border-radius: 13px; background: #eef2eb; }
+.tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding: 5px; border: 1px solid var(--border); border-radius: 13px; background: #eef2eb; }
 .tab { min-width: 0; min-height: 43px; padding: 7px 5px; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 7px; color: #46534b; font-size: .9rem; font-weight: 700; background: transparent; border: 1px solid transparent; border-radius: 9px; }
 .tab:hover { color: var(--ink); background: #ffffff9e; }
 .tab[aria-selected="true"] { color: #174331; background: white; border-color: #d9e2d9; box-shadow: 0 1px 2px #253d2a0a; }
@@ -235,9 +240,9 @@ dialog::backdrop { background: #14282066; }
   .header-inner { min-height: 62px; }
   .hero { min-height: 0; margin-block: 20px 28px; padding: 26px 22px; border-radius: 19px; align-items: flex-start; gap: 18px; }
   .hero-content { gap: 12px; }
-  .hero-date { padding: 9px 11px; gap: 4px; }
+  .hero-date { width: 194px; padding: 9px 11px; gap: 5px; }
   .hero-date-label { gap: 8px; font-size: .65rem; }
-  .hero-date time { font-size: .95rem; }
+  .hero-date input { font-size: .9rem; }
   .dashboard { grid-template-columns: minmax(0, 1fr); gap: 23px; }
   .sidebar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -245,9 +250,6 @@ dialog::backdrop { background: #14282066; }
 @media (max-width: 475px) {
   .shell { width: calc(100% - 26px); }
   .hero { flex-direction: column; }
-  .hero-date { display: flex; align-items: center; gap: 10px; }
-  .hero-date-label > span { display: none; }
-  .hero-date time::after { content: " JST"; font-size: .68rem; color: #e1ebdd; }
   .sidebar { grid-template-columns: minmax(0, 1fr); }
   .tabs { gap: 2px; }
   .tab { gap: 4px; min-height: 37px; font-size: .76rem; }

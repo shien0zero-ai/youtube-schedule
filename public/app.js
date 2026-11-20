@@ -19,18 +19,22 @@ const platformLabels = new Map([
 ]);
 
 const emptyStates = {
+  all: ["表示できる配信はありません", ""],
   live: ["配信中のライブはありません", "「今後の配信」から次のライブをチェックできます。"],
   upcoming: ["今後の配信予定はありません", "配信予定が公開されると、ここに表示されます。"],
   past: ["表示できる過去の配信はありません", "公式スケジュールに掲載中の過去配信、終了から24時間以内の配信、設定で残した配信が表示されます。"],
 };
 
 const timeZone = "Asia/Tokyo";
+const dayMilliseconds = 24 * 60 * 60 * 1000;
 const shortDay = new Intl.DateTimeFormat("ja-JP", { timeZone, month: "long", day: "numeric", weekday: "short" });
 const dateKey = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
 const clock = new Intl.DateTimeFormat("ja-JP", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 const nameOrder = new Intl.Collator("ja-JP");
 
 const byId = (id) => document.getElementById(id);
+const dateInput = byId("schedule-date");
+const dateShortcuts = [...document.querySelectorAll("[data-date-offset]")];
 const schedulePanel = byId("schedule-panel");
 const scheduleSearch = byId("schedule-search");
 const scheduleGroup = byId("schedule-group");
@@ -45,7 +49,8 @@ const refreshButton = byId("refresh");
 const tabs = [...document.querySelectorAll(".tab")];
 
 const state = {
-  status: "live",
+  status: "all",
+  dateSelection: "today",
   data: null,
   error: null,
   loading: true,
@@ -95,10 +100,39 @@ function setMessage(node, value = "", kind = "success") {
   node.hidden = !value;
 }
 
-function updateDate() {
+function jstDateKey(date) {
+  const parts = Object.fromEntries(dateKey.formatToParts(date).map(({ type, value }) => [type, value]));
+  return `${parts.year.padStart(4, "0")}-${parts.month}-${parts.day}`;
+}
+
+function streamDay(stream) {
+  const date = validDate(stream.startAt);
+  return date ? jstDateKey(date) : stream.scheduleDate ?? "";
+}
+
+function dayLabel(day) {
+  const date = validDate(`${day}T00:00:00+09:00`);
+  return date ? shortDay.format(date) : day;
+}
+
+function relativeDate(offset, now) {
+  if (offset === "all") return "";
+  return jstDateKey(new Date(now.getTime() + Number(offset) * dayMilliseconds));
+}
+
+function updateDateControls() {
   const now = new Date();
-  byId("today-date").dateTime = dateKey.format(now);
-  byId("today-date").textContent = shortDay.format(now);
+  const selected = state.dateSelection === "today" ? jstDateKey(now) : state.dateSelection;
+  if (dateInput.value !== selected) dateInput.value = selected;
+  for (const button of dateShortcuts) {
+    button.setAttribute("aria-pressed", String(relativeDate(button.dataset.dateOffset, now) === selected));
+  }
+  return selected;
+}
+
+function selectDate(date, now = new Date()) {
+  state.dateSelection = date === jstDateKey(now) ? "today" : date;
+  selectTab(byId("tab-all"));
 }
 
 async function request(path, options) {
@@ -158,7 +192,6 @@ async function loadSchedule({ refresh = false } = {}) {
       state.loading = false;
       refreshButton.disabled = false;
       refreshButton.removeAttribute("aria-busy");
-      updateDate();
       renderSchedule();
       if (dialog.open && !state.data) renderRoster();
     }
@@ -250,28 +283,29 @@ function renderStream(stream, channel) {
   return card;
 }
 
-function renderStreams(streams, channels) {
+function renderStreams(streams, channels, descending) {
   const groups = new Map();
   for (const stream of streams) {
-    const date = validDate(stream.startAt);
-    const key = date ? dateKey.format(date) : "";
-    if (!groups.has(key)) {
-      groups.set(key, { title: date ? shortDay.format(date) : "日時未定", streams: [] });
-    }
-    groups.get(key).streams.push(stream);
+    const day = streamDay(stream);
+    if (!groups.has(day)) groups.set(day, []);
+    groups.get(day).push(stream);
   }
 
-  return [...groups.values()].map((group) => {
+  const days = [...groups.keys()].filter(Boolean).sort();
+  if (descending) days.reverse();
+  if (groups.has("")) days.push("");
+  return days.map((day) => {
     const section = element("section", "stream-group");
     const list = element("div", "stream-list");
-    list.append(...group.streams.map((stream) => renderStream(stream, channels.get(stream.channelId))));
-    section.append(element("h3", "stream-day", group.title), list);
+    list.append(...groups.get(day).map((stream) => renderStream(stream, channels.get(stream.channelId))));
+    section.append(element("h3", "stream-day", day ? dayLabel(day) : "日時未定"), list);
     return section;
   });
 }
 
 function renderSchedule() {
   const { data, loading, error, status } = state;
+  const date = updateDateControls();
   const updated = validDate(data?.updatedAt);
   byId("sync-status").textContent = loading
     ? "配信情報を取得中"
@@ -297,24 +331,27 @@ function renderSchedule() {
   const matches = data.streams.filter((stream) => {
     const channel = channels.get(stream.channelId);
     if (channel?.hidden) return false;
+    if (date && streamDay(stream) !== date) return false;
     if (groups && groups !== channel?.group) return false;
     return !query || searchValue(stream.title).includes(query) || searchValue(channel?.name).includes(query);
   });
 
+  byId("count-all").textContent = matches.length;
   for (const key of Object.keys(statusLabels)) {
     byId("count-" + key).textContent = matches.filter((stream) => stream.status === key).length;
   }
 
-  const visible = matches.filter((stream) => stream.status === status);
+  const visible = status === "all" ? matches : matches.filter((stream) => stream.status === status);
+  const descending = status === "past";
   visible.sort((left, right) => {
     const leftDate = validDate(left.startAt);
     const rightDate = validDate(right.startAt);
     if (!leftDate || !rightDate) return Number(!leftDate) - Number(!rightDate);
-    return status === "past" ? rightDate - leftDate : leftDate - rightDate;
+    return descending ? rightDate - leftDate : leftDate - rightDate;
   });
 
   if (visible.length) {
-    schedulePanel.replaceChildren(...renderStreams(visible, channels));
+    schedulePanel.replaceChildren(...renderStreams(visible, channels, descending));
   } else if (groups || query) {
     schedulePanel.replaceChildren(stateCard("条件に一致する配信はありません", "", {
       action: () => {
@@ -327,6 +364,8 @@ function renderSchedule() {
     }));
   } else if (data.warnings?.length || error) {
     schedulePanel.replaceChildren(stateCard("この区分の配信情報はありません", "取得できた範囲の情報を表示しています。"));
+  } else if (date && status === "all") {
+    schedulePanel.replaceChildren(stateCard(`${dayLabel(date)}の配信はありません`, "取得済みの範囲から表示しています。"));
   } else {
     schedulePanel.replaceChildren(stateCard(...emptyStates[status]));
   }
@@ -485,6 +524,13 @@ for (const button of document.querySelectorAll("[data-open-settings]")) {
 }
 
 refreshButton.addEventListener("click", () => loadSchedule({ refresh: true }));
+dateInput.addEventListener("change", () => selectDate(dateInput.value));
+for (const button of dateShortcuts) {
+  button.addEventListener("click", () => {
+    const now = new Date();
+    selectDate(relativeDate(button.dataset.dateOffset, now), now);
+  });
+}
 scheduleSearch.addEventListener("input", renderSchedule);
 scheduleGroup.addEventListener("change", renderSchedule);
 rosterSearch.addEventListener("input", () => renderRoster());
@@ -582,9 +628,10 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
-updateDate();
 loadSchedule();
 window.setInterval(() => {
-  updateDate();
   if (!document.hidden && !state.loading && !dialog.open) loadSchedule();
 }, 90_000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) renderSchedule();
+});
