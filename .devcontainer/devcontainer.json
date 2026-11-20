@@ -1,0 +1,12 @@
+{
+  "name": "配信日和",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:24-bookworm",
+  "postStartCommand": "bash .devcontainer/start-app.sh",
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": {
+      "label": "配信日和",
+      "onAutoForward": "openBrowser"
+    }
+  }
+}
