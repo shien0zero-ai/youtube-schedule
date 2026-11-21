@@ -82,3 +82,26 @@ test('rejects invalid archive batches without saving their valid rows', async (t
   }
   assert.deepEqual((await app.get()).streams, []);
 });
+
+test('looks up blank archive titles and rejects Shorts and ordinary uploads', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'haishin-archives-lives-only-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const live = { id: 'archive1234', title: '実際の配信タイトル', status: 'past', isBroadcast: true };
+  const upload = { id: 'oldUpload01', title: '普通の投稿', isBroadcast: false };
+  const app = await startApp(t, {
+    file: join(dir, 'schedule.json'), now: () => time,
+    providers: {
+      getHololive: async () => ({ channels: [channel], streams: [] }),
+      getYouTubeVideos: async (ids) => [live, upload].filter(({ id }) => ids.includes(id)),
+    },
+  });
+  await app.get();
+  const archive = { date: '2020-01-31', channel: channel.id };
+  for (const url of [`https://www.youtube.com/shorts/${upload.id}`, `https://youtu.be/${upload.id}`]) {
+    const response = await app.importArchives([{ ...archive, url }]);
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /公開ライブ配信/);
+  }
+  assert.equal((await app.importArchives([{ ...archive, url: `https://youtu.be/${live.id}` }])).status, 201);
+  assert.deepEqual((await app.get()).streams.map(({ title }) => title), [live.title]);
+});

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { getHololive, parseOfficialSchedule } from '../src/hololive.mjs';
+import { getHololive, holoduleBroadcast, parseOfficialSchedule } from '../src/hololive.mjs';
 
 const now = () => Date.parse('2026-12-31T16:00:00Z');
 const soraId = 'UCp6993wxpyDPHUpavwDFqgg';
@@ -51,13 +51,13 @@ test('reads Hololive Holodule cards with JST dates across New Year and their sou
   `), now());
   assert.deepEqual(rows.map(({ title, status, startAt }) => ({ title, status, startAt })), [
     { title: 'Black & White', status: 'past', startAt: '2026-12-31T14:00:00.000Z' },
-    { title: 'Mori Calliope の配信', status: 'live', startAt: '2026-12-31T15:30:00.000Z' },
-    { title: 'FUWAMOCO の配信', status: 'upcoming', startAt: '2026-12-31T22:05:00.000Z' },
-    { title: 'ホロライブ公式 の配信', status: 'upcoming', startAt: '2027-01-01T00:00:00.000Z' },
-    { title: 'holoAN room（ホロアナ） の配信', status: 'upcoming', startAt: '2027-01-01T00:05:00.000Z' },
-    { title: '熱千めら の配信', status: 'upcoming', startAt: '2027-01-01T00:10:00.000Z' },
-    { title: 'ReGLOSS の配信', status: 'upcoming', startAt: '2027-01-01T01:00:00.000Z' },
-    { title: 'Takanashi Kiara の配信', status: 'upcoming', startAt: '2026-12-31T23:00:00.000Z' },
+    { title: null, status: 'live', startAt: '2026-12-31T15:30:00.000Z' },
+    { title: null, status: 'upcoming', startAt: '2026-12-31T22:05:00.000Z' },
+    { title: null, status: 'upcoming', startAt: '2027-01-01T00:00:00.000Z' },
+    { title: null, status: 'upcoming', startAt: '2027-01-01T00:05:00.000Z' },
+    { title: null, status: 'upcoming', startAt: '2027-01-01T00:10:00.000Z' },
+    { title: null, status: 'upcoming', startAt: '2027-01-01T01:00:00.000Z' },
+    { title: null, status: 'upcoming', startAt: '2026-12-31T23:00:00.000Z' },
     { title: '公演のお知らせ', status: 'upcoming', startAt: null },
     { title: 'リンクが未定のお知らせ', status: 'upcoming', startAt: null },
     { title: '公演のお知らせ', status: 'upcoming', startAt: null },
@@ -81,7 +81,28 @@ test('reads Hololive Holodule cards with JST dates across New Year and their sou
   assert.notEqual(rows[10].id, rows[8].id);
 });
 
-test('adds YouTube’s title and actual completion time to official cards', async () => {
+test('keeps nonbroadcast Holodule entries for secondary catalogs with distinct link evidence', () => {
+  const { streams } = parseOfficialSchedule(schedule(`
+    <div class="holodule navbar-text">01/01</div>
+    ${card('ordinary123', 'ときのそら', '10:00')}
+    ${card('livelink123', 'ときのそら', '11:00', '', 'https://www.youtube.com/live/livelink123')}
+    ${card('shortlink12', 'ときのそら', '12:00', '', 'https://www.youtube.com/shorts/shortlink12')}
+    ${card('premiere123', 'ときのそら', '13:00', 'title="【MV】新曲" style="border: 3px red solid;"')}
+    ${card('twitch', 'ときのそら', '14:00', '', 'https://www.twitch.tv/videos/123456')}
+    ${card('clip', 'ときのそら', '15:00', '', 'https://clips.twitch.tv/example')}
+    <a class="thumbnail" href="https://www.example.org/announcement" title="公演のお知らせ"></a>
+  `), now());
+
+  assert.deepEqual(streams.map(({ isBroadcast }) => isBroadcast), [null, true, false, true, true, false, false]);
+  assert.equal(streams[2].id, 'shortlink12');
+  assert.equal(streams[3].title, '【MV】新曲');
+  assert.equal(holoduleBroadcast(streams[3]), false);
+  assert.equal(holoduleBroadcast(streams[2], { isBroadcast: true }), false);
+  assert.equal(holoduleBroadcast(streams[3], { isBroadcast: true, title: 'MVを振り返る雑談配信' }), true);
+  assert.equal(holoduleBroadcast({ isBroadcast: true }, { isBroadcast: false }), false);
+});
+
+test('adds YouTube’s title and actual completion time even to an older listed card', async () => {
   const id = 'archive1234';
   const result = await getHololive({
     now,
@@ -90,7 +111,7 @@ test('adds YouTube’s title and actual completion time to official cards', asyn
       if (typeof url === 'string') {
         assert.equal(url, hololiveScheduleUrl);
         assert.equal(options.redirect, 'error');
-        return new Response(schedule(`<div class="navbar-text holodule">12/31</div>${card(id, 'ときのそら', '23:00')}`));
+        return new Response(schedule(`<div class="navbar-text holodule">12/30</div>${card(id, 'ときのそら', '23:00')}`));
       }
       if (url.hostname === 'www.youtube.com') return flagshipChannel();
       assert.equal(url.hostname, 'www.googleapis.com');
@@ -106,7 +127,7 @@ test('adds YouTube’s title and actual completion time to official cards', asyn
       return Response.json({ items: [{
         id,
         snippet: { title: '年越し配信', channelId: soraId },
-        liveStreamingDetails: { actualStartTime: '2026-12-31T14:50:00Z', actualEndTime: '2026-12-31T15:30:00Z' },
+        liveStreamingDetails: { actualStartTime: '2026-12-30T14:50:00Z', actualEndTime: '2026-12-30T15:30:00Z' },
       }] });
     },
   });
@@ -114,8 +135,34 @@ test('adds YouTube’s title and actual completion time to official cards', asyn
   assert.deepEqual(result.warnings, []);
   assert.equal(result.streams[0].title, '年越し配信');
   assert.equal(result.streams[0].channelId, soraId);
-  assert.equal(result.streams[0].endAt, '2026-12-31T15:30:00.000Z');
+  assert.equal(result.streams[0].endAt, '2026-12-30T15:30:00.000Z');
+  assert.equal(result.streams[0].isBroadcast, true);
   assert.deepEqual(result.holoduleIds, [id]);
+});
+
+test('uses enough YouTube metadata to recover every title across a large official listing', async () => {
+  const ids = Array.from({ length: 56 }, (_, index) => `library${String(index).padStart(4, '0')}`);
+  const markup = schedule(`<div class="holodule navbar-text">01/01</div>${
+    ids.map((id) => card(id, 'さくらみこ', '12:00')).join('')
+  }`);
+  const metadataPageSizes = [];
+  const result = await getHololive({
+    now, apiKey: 'test',
+    async fetchImpl(url) {
+      if (typeof url === 'string') return new Response(markup);
+      if (url.pathname.endsWith('/videos') && url.hostname === 'www.googleapis.com') {
+        const batch = url.searchParams.get('id').split(',');
+        metadataPageSizes.push(batch.length);
+        return Response.json({ items: batch.map((id) => ({
+          id, snippet: { title: `公開動画 ${id}`, channelId: soraId },
+        })) });
+      }
+      return new Response(null, { status: 403 });
+    },
+  });
+  assert.deepEqual(metadataPageSizes, [50, 6]);
+  assert.equal(result.streams.length, ids.length);
+  assert.ok(result.streams.every(({ title, isBroadcast }) => title.startsWith('公開動画 ') && isBroadcast !== true));
 });
 
 test('enriches YouTube only and preserves the source label for newly discovered groups', async () => {

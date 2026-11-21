@@ -162,7 +162,8 @@
               <option value="">チャンネルを選択</option>
             </select>
             <label for="archive-title">配信タイトル（任意）</label>
-            <input id="archive-title" name="title" type="text">
+            <input id="archive-title" name="title" type="text" aria-describedby="archive-title-hint">
+            <p id="archive-title-hint" class="archive-hint">空欄の場合は、取得できた YouTube の動画タイトルを表示します。</p>
             <label for="archive-url">公開アーカイブの URL</label>
             <input id="archive-url" name="url" type="url" placeholder="https://www.youtube.com/watch?v=…" required>
             <label class="archive-special"><input id="archive-special" name="specialLive" type="checkbox">3Dライブとして登録</label>

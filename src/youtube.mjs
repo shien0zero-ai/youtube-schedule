@@ -1,3 +1,6 @@
+import { isNonBroadcastTitle } from './broadcasts.mjs';
+import { isShortVideoTitle } from './music-video-classification.mjs';
+
 const youtubeOrigin = 'https://www.youtube.com';
 const youtubeHosts = new Set(['www.youtube.com', 'youtube.com', 'm.youtube.com']);
 const channelIdPattern = /^UC[A-Za-z0-9_-]{22}$/;
@@ -97,7 +100,7 @@ async function youtubePage(url, options, { missing = 'error' } = {}) {
       if (response.status === 404 && missing === 'video') return null;
       throw new Error(`YouTubeのページを取得できませんでした（HTTP ${response.status}）。`);
     }
-    return response.text();
+    return { html: await response.text(), pathname: address.pathname };
   }
   throw new Error('YouTubeページを取得する際の転送回数が上限を超えました。');
 }
@@ -147,7 +150,7 @@ function timestamp(value) {
   return new Date(parsed).toISOString();
 }
 
-function stream(id, title, status, startAt, endAt = null, channelId = null) {
+function stream({ id, title, status, startAt, endAt = null, channelId, isBroadcast, durationSeconds = null }) {
   return {
     id,
     title,
@@ -157,7 +160,21 @@ function stream(id, title, status, startAt, endAt = null, channelId = null) {
     thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
     url: `${youtubeOrigin}/watch?v=${id}`,
     channelId: channelIdPattern.test(channelId ?? '') ? channelId : null,
+    isBroadcast,
+    durationSeconds,
   };
+}
+
+function durationInSeconds(value) {
+  if (value === 'P0D') return 0;
+  const match = typeof value === 'string' && value.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
+  if (!match) return null;
+  return Number(match[1] ?? 0) * 3600 + Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0);
+}
+
+function hasLiveProgrammeTitle(title) {
+  return /生放送|生配信|ライブ配信|実況|耐久|参加型|歌枠|カラオケ|雑談|朝活|同時視聴|3\s*d\s*(?:live|ライブ)|\b(?:live\s*stream(?:ing)?|karaoke|zatsudan|watch[ -]?along)\b/iu
+    .test(title.normalize('NFKC'));
 }
 
 function avatarUrl(value) {
@@ -179,12 +196,20 @@ function streamCards(contents) {
     if (!current || typeof current !== 'object') continue;
     const item = current.videoRenderer ?? current.gridVideoRenderer;
     const lockup = current.lockupViewModel;
-    const id = item?.videoId ?? lockup?.contentId;
+    const reel = current.reelItemRenderer ?? current.shortsLockupViewModel;
+    const endpoint = item?.navigationEndpoint
+      ?? lockup?.rendererContext?.commandContext?.onTap?.innertubeCommand;
+    const id = item?.videoId ?? lockup?.contentId ?? reel?.videoId
+      ?? reel?.onTap?.innertubeCommand?.reelWatchEndpoint?.videoId;
     if (videoIdPattern.test(id ?? '')) {
+      const path = endpoint?.commandMetadata?.webCommandMetadata?.url;
+      const nonBroadcast = reel || endpoint?.reelWatchEndpoint || lockup?.contentType === 'LOCKUP_CONTENT_TYPE_SHORT'
+        || path?.startsWith('/shorts/') || item?.upcomingEventData?.isPremiere === true;
       entries.set(id, {
         id,
         title: textValue(item?.title ?? lockup?.metadata?.lockupMetadataViewModel?.title),
         scheduledStartAt: timestamp(item?.upcomingEventData?.startTime),
+        isBroadcast: !nonBroadcast,
       });
       continue;
     }
@@ -197,7 +222,7 @@ function streamCards(contents) {
 }
 
 async function readPublicChannelPage(url, options) {
-  const html = await youtubePage(`${url}/streams?hl=en`, options, { missing: 'channel' });
+  const { html } = await youtubePage(`${url}/streams?hl=en`, options, { missing: 'channel' });
   const data = embeddedJson(html, 'ytInitialData');
   const metadata = data?.metadata?.channelMetadataRenderer;
   const name = metadata?.title;
@@ -225,9 +250,15 @@ async function readPublicChannelPage(url, options) {
 async function readPublicChannel(url, options) {
   const { entries, ...channel } = await readPublicChannelPage(url, options);
   const videos = await readPublicVideos(entries, options, { allowPartial: false });
-  const streams = videos.filter(({ startAt, status }) => startAt && status);
-  if (!streams.length && entries.length) throw new Error('YouTubeから配信日時を取得できませんでした。');
+  const streams = videos.filter((video) => isChannelBroadcast(video, channel.channelId));
+  if (!streams.length && videos.some(({ isBroadcast, startAt }) => isBroadcast !== false && !startAt)) {
+    throw new Error('YouTubeから配信日時を取得できませんでした。');
+  }
   return { ...channel, streams };
+}
+
+function isChannelBroadcast({ startAt, status, isBroadcast, channelId }, expectedChannelId) {
+  return isBroadcast === true && startAt && status && (!channelId || channelId === expectedChannelId);
 }
 
 async function readPublicVideos(entries, options, { allowPartial = true } = {}) {
@@ -245,48 +276,59 @@ async function readPublicVideos(entries, options, { allowPartial = true } = {}) 
   return streams;
 }
 
-async function readPublicStream({ id, title, scheduledStartAt }, options) {
+async function readPublicStream({ id, title, scheduledStartAt, isBroadcast: streamTabEvidence }, options) {
+  if (streamTabEvidence === false) return null;
   const useCache = options.fetchImpl === fetch;
   if (useCache) {
     const cached = completedVideos.get(id);
     if (cached?.expiresAt > Date.now()) return { ...cached.video };
     completedVideos.delete(id);
   }
-  if (title && scheduledStartAt) {
-    return stream(id, title, 'upcoming', scheduledStartAt);
+  if (streamTabEvidence === true && title && scheduledStartAt) {
+    return stream({ id, title, status: 'upcoming', startAt: scheduledStartAt, isBroadcast: true });
   }
 
-  const html = await youtubePage(`${youtubeOrigin}/watch?v=${id}&hl=en`, options, { missing: 'video' });
-  if (!html) return null;
+  const page = await youtubePage(`${youtubeOrigin}/watch?v=${id}&hl=en`, options, { missing: 'video' });
+  if (!page) return null;
+  const { html, pathname } = page;
   const player = embeddedJson(html, 'ytInitialPlayerResponse');
   if (youtubeBlocked(player ? '' : html, player?.playabilityStatus?.reason)) {
     throw new Error('YouTubeが同意画面または本人確認画面を返しました。');
   }
   if (!player) throw new Error('YouTubeの動画情報を読み取れませんでした。');
-  if (player.videoDetails?.videoId && player.videoDetails.videoId !== id) return null;
-  const broadcast = player.microformat?.playerMicroformatRenderer?.liveBroadcastDetails;
-  const offline = player.playabilityStatus?.liveStreamability?.liveStreamabilityRenderer
-    ?.offlineSlate?.liveStreamOfflineSlateRenderer;
-  const videoTitle = player.videoDetails?.title || title;
-  const channelId = player.videoDetails?.channelId;
+  const details = player.videoDetails;
+  if (details?.videoId && details.videoId !== id) return null;
+  const microformat = player.microformat?.playerMicroformatRenderer;
+  const broadcast = microformat?.liveBroadcastDetails;
+  const streamability = player.playabilityStatus?.liveStreamability?.liveStreamabilityRenderer;
+  const offline = streamability?.offlineSlate?.liveStreamOfflineSlateRenderer;
+  const videoTitle = textValue(details?.title).trim() || textValue(microformat?.title).trim() || title;
+  const channelId = details?.channelId;
   const startAt = timestamp(broadcast?.startTimestamp ?? offline?.scheduledStartTime);
   if (!videoTitle) return null;
 
+  const nonBroadcast = pathname.startsWith('/shorts/') || /^(?:https:\/\/(?:www\.|m\.)?youtube\.com)?\/shorts\//.test(microformat?.canonicalUrl ?? '')
+    || details?.isPremiere === true || broadcast?.isPremiere === true || streamability?.isPremiere === true
+    || details?.isLiveContent === false;
+  const liveContent = streamTabEvidence === true || details?.isLiveContent === true || details?.isLive === true;
+  const isBroadcast = nonBroadcast ? false : liveContent ? true
+    : isNonBroadcastTitle(videoTitle) || (!broadcast && !offline && details?.isUpcoming !== true) ? false : null;
+  const durationSeconds = /^\d+$/.test(details?.lengthSeconds ?? '') ? Number(details.lengthSeconds) : null;
   const endAt = timestamp(broadcast?.endTimestamp);
+  let status = null;
+  if (endAt) status = 'past';
+  else if (broadcast?.isLiveNow || details?.isLive) status = 'live';
+  else if (offline?.scheduledStartTime || player.playabilityStatus?.status === 'LIVE_STREAM_OFFLINE' ||
+      details?.isUpcoming === true || (startAt && Date.parse(startAt) > Date.now())) status = 'upcoming';
+  else if (broadcast?.isLiveNow === false && startAt) status = 'past';
+  const video = stream({ id, title: videoTitle, status, startAt, endAt, channelId, isBroadcast, durationSeconds });
   if (endAt) {
-    const video = stream(id, videoTitle, 'past', startAt, endAt, channelId);
-    if (useCache && startAt) {
+    if (useCache && startAt && isBroadcast !== null) {
       if (completedVideos.size === completedVideoLimit) completedVideos.delete(completedVideos.keys().next().value);
       completedVideos.set(id, { video: { ...video }, expiresAt: Date.now() + completedVideoLifetimeMs });
     }
-    return video;
   }
-  if (broadcast?.isLiveNow || player.videoDetails?.isLive) return stream(id, videoTitle, 'live', startAt, null, channelId);
-  if (offline?.scheduledStartTime || player.playabilityStatus?.status === 'LIVE_STREAM_OFFLINE' || (startAt && Date.parse(startAt) > Date.now())) {
-    return stream(id, videoTitle, 'upcoming', startAt, null, channelId);
-  }
-  const status = broadcast?.isLiveNow === false && startAt ? 'past' : null;
-  return stream(id, videoTitle, status, startAt, null, channelId);
+  return video;
 }
 
 export async function youtubeApi(endpoint, params, options, apiKey) {
@@ -327,12 +369,15 @@ async function readApiChannel(url, options, apiKey) {
     ...entries.map(({ id }) => id),
     ...items.map(({ contentDetails }) => contentDetails?.videoId),
   ])].filter((id) => videoIdPattern.test(id ?? ''));
-  const videos = await readApiVideos(ids, options, apiKey);
-  const streams = videos.filter(({ startAt, status }) => startAt && status);
+  const videos = await readApiVideos(ids, options, apiKey, entries);
+  const streams = videos.filter((video) => isChannelBroadcast(video, channelId));
   const streamIds = new Set(streams.map(({ id }) => id));
-  for (const { id, title, scheduledStartAt } of entries) {
-    if (!streamIds.has(id) && title && scheduledStartAt) {
-      streams.push(stream(id, title, 'upcoming', scheduledStartAt, null, channelId));
+  const found = new Map(videos.map((video) => [video.id, video]));
+  for (const { id, title, scheduledStartAt, isBroadcast } of entries) {
+    const video = found.get(id);
+    if (!streamIds.has(id) && isBroadcast && video?.isBroadcast !== false &&
+        (!video?.channelId || video.channelId === channelId) && (video?.title || title) && scheduledStartAt) {
+      streams.push(stream({ id, title: video?.title || title, status: 'upcoming', startAt: scheduledStartAt, channelId, isBroadcast: true }));
     }
   }
   const thumbnails = channel.snippet?.thumbnails;
@@ -340,32 +385,67 @@ async function readApiChannel(url, options, apiKey) {
   return { name, channelId, avatar, streams };
 }
 
-async function readApiVideos(ids, options, apiKey) {
+function apiBroadcastEvidence(item, status, startAt, streamTabEvidence, durationSeconds) {
+  const { snippet, liveStreamingDetails: details } = item;
+  const shortTag = /^#?(?:shorts|youtube shorts|ショート動画)$/iu;
+  const tags = Array.isArray(snippet.tags) ? snippet.tags : [];
+  const isShort = isShortVideoTitle(snippet.title) || (durationSeconds > 0 && durationSeconds <= 180
+    && (/#shorts\b|#ショート動画(?![\p{L}\p{N}_])/iu.test(snippet.description ?? '')
+      || tags.some((tag) => typeof tag === 'string' && shortTag.test(tag.trim()))));
+  if (streamTabEvidence === false || isShort) return false;
+  if (streamTabEvidence === true) return true;
+  if (isNonBroadcastTitle(snippet.title, { officialMusic: snippet.categoryId === '10' })) return false;
+  if (status && startAt) {
+    // Pending or active live streams have no uploaded runtime yet; known premieres omit this duration.
+    if (status !== 'past' && durationSeconds === 0) return true;
+    if ((durationSeconds === null || durationSeconds > 60) && hasLiveProgrammeTitle(snippet.title)) return true;
+  }
+  return !details && snippet.liveBroadcastContent === 'none' ? false : null;
+}
+
+async function readApiVideos(ids, options, apiKey, entries = []) {
+  const evidence = new Map(entries.map(({ id, isBroadcast }) => [id, isBroadcast]));
   const streams = [];
   for (let index = 0; index < ids.length; index += 50) {
     const { items = [] } = await youtubeApi('videos', {
-      part: 'snippet,liveStreamingDetails',
+      part: 'snippet,liveStreamingDetails,contentDetails',
       id: ids.slice(index, index + 50).join(','),
     }, options, apiKey);
-    for (const { id, snippet, liveStreamingDetails: details } of items) {
-      const title = snippet?.title;
+    for (const item of items) {
+      const { id, snippet, liveStreamingDetails: details, contentDetails } = item;
+      const title = snippet?.title?.trim();
       const actualStart = timestamp(details?.actualStartTime);
       const startAt = actualStart ?? timestamp(details?.scheduledStartTime);
       const endAt = timestamp(details?.actualEndTime);
       if (!videoIdPattern.test(id ?? '') || !title) continue;
       const status = endAt ? 'past' : actualStart ? 'live' : startAt ? 'upcoming' : null;
-      streams.push(stream(id, title, status, startAt, endAt, snippet?.channelId));
+      const durationSeconds = durationInSeconds(contentDetails?.duration);
+      const isBroadcast = apiBroadcastEvidence(item, status, startAt, evidence.get(id), durationSeconds);
+      streams.push(stream({ id, title, status, startAt, endAt, channelId: snippet.channelId, isBroadcast, durationSeconds }));
     }
   }
   return streams;
 }
 
-export async function getYouTubeVideos(videoIds, { fetchImpl = fetch, apiKey = process.env.YOUTUBE_API_KEY } = {}) {
+export async function getYouTubeVideos(videoIds, {
+  fetchImpl = fetch, apiKey = process.env.YOUTUBE_API_KEY, verifyBroadcast = false,
+} = {}) {
   const ids = [...new Set(videoIds)].filter((id) => typeof id === 'string' && videoIdPattern.test(id));
   const options = { fetchImpl, signal: AbortSignal.timeout(requestTimeoutMs) };
-  return apiKey
-    ? await readApiVideos(ids, options, apiKey)
-    : await readPublicVideos(ids.map((id) => ({ id })), options);
+  if (!apiKey) return readPublicVideos(ids.map((id) => ({ id })), options);
+
+  const videos = await readApiVideos(ids, options, apiKey);
+  if (!verifyBroadcast) return videos;
+  const unknown = videos.filter(({ isBroadcast }) => isBroadcast === null).slice(0, 6);
+  if (!unknown.length) return videos;
+
+  const checked = await readPublicVideos(unknown, { ...options, signal: AbortSignal.timeout(supplementTimeoutMs) }).catch(() => []);
+  const checksById = new Map(checked.map((video) => [video.id, video]));
+  return videos.map((video) => {
+    const check = checksById.get(video.id);
+    if (check?.isBroadcast == null || (video.channelId && check.channelId && video.channelId !== check.channelId)) return video;
+    return { ...video, isBroadcast: check.isBroadcast };
+  });
 }
 
 export async function getYouTubeChannel(rawUrl, { fetchImpl = fetch, apiKey = process.env.YOUTUBE_API_KEY } = {}) {

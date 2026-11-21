@@ -12,7 +12,7 @@ const custom = { name: '追加テスト', channelId: 'UCcustom' };
 
 function stream(id, status, startOffset, endOffset = null) {
   return {
-    id, title: id, status,
+    id, title: id, status, isBroadcast: true,
     startAt: new Date(baseTime + startOffset * hour).toISOString(),
     endAt: endOffset === null ? null : new Date(baseTime + endOffset * hour).toISOString(),
     url: `https://www.youtube.com/watch?v=${id}`,
@@ -262,4 +262,42 @@ test('withholds unscoped Holodule cache and restores saved history for verified 
   assert.deepEqual(updated.channels.map(({ id }) => id), [official.id, unit.id]);
   assert.equal(updated.channels.find(({ id }) => id === unit.id).keepPast, true);
   assert.deepEqual(updated.streams.map(({ id }) => id), ['unit-history']);
+});
+
+test('filters cached and current uploads while recovering real broadcast titles without erasing history', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'youtube-schedule-lives-only-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'schedule.json');
+  const archive = { ...stream('liveArchive', 'past', -30, -29), channelId: official.id,
+    isBroadcast: undefined, title: `${official.name} の配信`, holoduleTitle: `${official.name} の配信` };
+  const ordinary = { ...stream('oldUpload01', 'past', -30, -29), channelId: official.id, isBroadcast: undefined };
+  const legacyShort = { ...stream('oldShort001', 'past', -30), channelId: official.id, isBroadcast: undefined, title: '切り抜き #Shorts' };
+  await writeFile(file, JSON.stringify({ roster: [official], custom: [], preferences: {}, streams: [archive, ordinary, legacyShort] }));
+
+  let now = baseTime;
+  const shown = { ...stream('newActual01', 'upcoming', 2), channelId: official.id, title: '今夜のゲーム配信' };
+  const premiere = { ...stream('premiere001', 'upcoming', 3), channelId: official.id, isBroadcast: false };
+  const uncertain = { ...stream('notChecked1', 'upcoming', 4), channelId: official.id, isBroadcast: null };
+  const request = await startApp(t, {
+    file, now: () => now,
+    providers: {
+      getHololive: async () => ({ channels: [official], streams: [shown, premiere, uncertain],
+        holoduleIds: [shown.id, premiere.id, uncertain.id], scheduleAvailable: true }),
+      getYouTubeVideos: async (ids) => {
+        assert.deepEqual(ids, [archive.id, ordinary.id]);
+        return [
+          { ...archive, title: '昔の配信タイトル', isBroadcast: null, durationSeconds: 3600 },
+          { id: ordinary.id, title: '通常の投稿', isBroadcast: false },
+        ];
+      },
+    },
+  });
+
+  const first = await (await request('/api/schedule')).json();
+  assert.deepEqual(first.streams.map(({ id, title }) => [id, title]), [[archive.id, '昔の配信タイトル'], [shown.id, shown.title]]);
+  assert.ok(JSON.parse(await readFile(file, 'utf8')).streams.some(({ id, isBroadcast }) => id === ordinary.id && isBroadcast === false));
+  shown.title = `${official.name} の配信`;
+  now += 20_000;
+  const second = await (await request('/api/schedule?refresh=1')).json();
+  assert.equal(second.streams.find(({ id }) => id === shown.id).title, '今夜のゲーム配信');
 });

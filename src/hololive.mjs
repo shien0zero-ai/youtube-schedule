@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
+import { isNonBroadcastTitle } from './broadcasts.mjs';
 import { officialHololiveChannelId, rosterGroups } from './data/hololive-roster.mjs';
 import { getYouTubeChannel, getYouTubeVideos, youtubeVideoId } from './youtube.mjs';
 
 const officialScheduleUrl = 'https://schedule.hololive.tv/lives/hololive';
 const hour = 60 * 60 * 1000;
-const day = 24 * hour;
 const groups = Object.entries(rosterGroups).flatMap(([group, rows]) => rows.map(
   ([id, name, aliases, avatar, affiliation = 'active']) => ({
     aliases,
@@ -101,6 +101,35 @@ function isLiveCard(attrs) {
     || ['live', 'true'].includes(attrs['data-live']);
 }
 
+function linkedBroadcast(link, videoId, startAt, live) {
+  if (!link) return false;
+  const host = link.hostname.replace(/^www\./, '');
+  const path = link.pathname;
+  if (videoId) {
+    if (path.startsWith('/shorts/')) return false;
+    return path.startsWith('/live/') || live ? true : null;
+  }
+  if (['youtube.com', 'm.youtube.com', 'youtu.be', 'clips.twitch.tv'].includes(host)) return false;
+  if (host === 'twitch.tv') return /^\/(?:videos\/\d+|[a-z\d_]{2,25})\/?$/i.test(path);
+  if (host === 'live.nicovideo.jp') return /^\/watch\/lv\d+\/?$/.test(path);
+  if (host === 'twitcasting.tv') return /^\/[\w.-]+(?:\/movie\/\d+)?\/?$/.test(path);
+  return startAt ? (live ? true : null) : false;
+}
+
+export function holoduleBroadcast(record, details) {
+  if (record.isBroadcast === false || details?.isBroadcast === false) return false;
+  if (details?.isBroadcast === true) return true;
+  if ([record.title, record.holoduleTitle, details?.title].some((title) => isNonBroadcastTitle(title))) return false;
+  if (details?.durationSeconds > 0 && details.durationSeconds <= 60) return null;
+  if (record.isBroadcast === true) return true;
+  if (!record.startAt || !details?.startAt || !details.status) return null;
+
+  // A timed Holodule listing can corroborate the API's broadcast metadata when the player is unavailable.
+  const elapsed = Date.parse(details.endAt) - Date.parse(details.startAt);
+  return details.durationSeconds > 60 || elapsed > 60 * 1000
+    || (details.durationSeconds === 0 && details.status !== 'past') ? true : null;
+}
+
 export function parseOfficialSchedule(html, now = Date.now()) {
   const pane = [...html.matchAll(/<div\b[^>]*>/gi)].find((match) => {
     const attrs = attributes(match[0]);
@@ -144,14 +173,17 @@ export function parseOfficialSchedule(html, now = Date.now()) {
       const ms = date && hours ? Date.parse(`${date}T${hours.padStart(2, '0')}:${minutes}:00+09:00`) : null;
       const startAt = ms === null ? null : new Date(ms).toISOString();
       const picture = cardPicture(card);
-      const title = attrs.title?.trim() || picture?.title || (name ? `${channel.name} の配信` : 'ホロジュールのお知らせ');
-      // Official announcements may repeat a destination, including within one day.
-      const id = videoId ?? identifier('holodule-card-', channel.id, link?.href, startAt ?? date ?? null, title, picture?.url);
+      const title = attrs.title?.trim() || picture?.title || null;
+      const live = isLiveCard(attrs);
+      // Keep non-YouTube card IDs stable when the source has no title.
+      const id = videoId ?? identifier('holodule-card-', channel.id, link?.href, startAt ?? date ?? null,
+        title ?? (name ? `${channel.name} の配信` : 'ホロジュールのお知らせ'), picture?.url);
       const record = {
         id,
         channelId: channel.id,
         title,
-        status: isLiveCard(attrs) ? 'live' : ms === null || ms > now ? 'upcoming' : 'past',
+        status: live ? 'live' : ms === null || ms > now ? 'upcoming' : 'past',
+        isBroadcast: linkedBroadcast(link, videoId, startAt, live),
         startAt,
         ...(!startAt && date ? { scheduleDate: date } : {}),
         endAt: null,
@@ -178,12 +210,11 @@ async function enrichAvailable(records, fetchImpl, time, apiKey) {
   for (const id of cache.keys()) {
     if (!recordIds.has(id)) cache.delete(id);
   }
-  const candidates = records.filter(({ id, platform, status, startAt }) =>
-    platform === 'youtube' && !(cache.get(id)?.expiresAt > time) &&
-    (status !== 'past' || Date.parse(startAt) > time - day));
+  const candidates = records.filter(({ id, platform }) =>
+    platform === 'youtube' && !(cache.get(id)?.expiresAt > time));
   candidates.sort((left, right) => Number(cache.has(left.id)) - Number(cache.has(right.id)) ||
     enrichmentPriority(left, time) - enrichmentPriority(right, time));
-  const ids = candidates.slice(0, apiKey ? 50 : 12).map(({ id }) => id);
+  const ids = candidates.slice(0, apiKey ? 150 : 12).map(({ id }) => id);
   if (ids.length) {
     const videos = await getYouTubeVideos(ids, { fetchImpl, apiKey }).catch(() => []);
     const byId = new Map(videos.map((video) => [video.id, video]));
@@ -194,12 +225,15 @@ async function enrichAvailable(records, fetchImpl, time, apiKey) {
     }
   }
   let incomplete = false;
+  const knownNonBroadcastIds = new Set();
   const streams = records.map((record) => {
-    if (record.platform !== 'youtube') return record;
+    if (record.platform !== 'youtube') return { ...record, isBroadcast: holoduleBroadcast(record) };
     const cached = cache.get(record.id);
     const details = cached?.video;
-    if (!details?.status || (record.status === 'past' && !details.endAt)) incomplete = true;
-    if (!details) return record;
+    if (record.isBroadcast === false || details?.isBroadcast === false) knownNonBroadcastIds.add(record.id);
+    const isBroadcast = holoduleBroadcast(record, details);
+    if (isBroadcast !== false && (isBroadcast === null || !details?.status || (record.status === 'past' && !details.endAt))) incomplete = true;
+    if (!details) return { ...record, isBroadcast };
     const channel = channelsById.has(record.channelId) ? channelsById.get(details.channelId) : null;
     const fresh = cached.expiresAt > time;
     const actualStatus = fresh || details.endAt ? details.status : null;
@@ -211,11 +245,12 @@ async function enrichAvailable(records, fetchImpl, time, apiKey) {
       ...(record.title !== details.title ? { holoduleTitle: record.title } : {}),
       thumbnail: details.thumbnail,
       status: actualStatus ?? record.status,
+      isBroadcast,
       startAt: actualStatus ? details.startAt ?? record.startAt : record.startAt,
       endAt: details.endAt,
     };
   });
-  return { streams, incomplete };
+  return { streams, incomplete, knownNonBroadcastIds };
 }
 
 async function readOfficialSchedule(fetchImpl, time, apiKey) {
@@ -244,7 +279,7 @@ export async function getHololive({ fetchImpl = fetch, now = Date.now, apiKey = 
   const channel = channelResult.status === 'fulfilled' ? channelResult.value : null;
   const warnings = [];
   if (!schedule) warnings.push('公式ホロジュールに接続できないか、配信一覧を読み取れませんでした。');
-  else if (schedule.incomplete) warnings.push('一部の配信は公式ホロジュールの時刻と配信中表示で分類しています。');
+  else if (schedule.incomplete) warnings.push('一部の枠の配信状態やタイトルを確認できませんでした。');
   if (!channel || channel.warning) warnings.push('ホロライブ公式の YouTube チャンネルから配信一覧を取得できませんでした。');
 
   const streams = new Map((schedule?.streams ?? []).map((stream) => [stream.id, stream]));
@@ -252,6 +287,8 @@ export async function getHololive({ fetchImpl = fetch, now = Date.now, apiKey = 
     const listed = streams.get(stream.id);
     streams.set(stream.id, {
       ...stream, channelId: listed?.channelId ?? officialChannel.id, platform: 'youtube',
+      isBroadcast: schedule?.knownNonBroadcastIds.has(stream.id) ? false
+        : stream.isBroadcast ?? listed?.isBroadcast ?? (isNonBroadcastTitle(stream.title) ? false : null),
       ...(listed ? { holoduleTitle: listed.holoduleTitle ?? listed.title, uploaderChannelId: officialChannel.id } : {}),
     });
   }

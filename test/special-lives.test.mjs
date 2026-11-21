@@ -107,10 +107,10 @@ test('manual 3D uploads require an eligible channel and stay in the dedicated hi
   const schedule = open();
   await schedule.refresh();
   const archive = { date: '2024-02-09', channel: miko.id, title: '以前の3Dライブ', url: 'https://youtu.be/archive1234', specialLive: true };
-  assert.throws(() => schedule.addArchives([archive, { ...archive, channel: stars.id }]), { statusCode: 400 });
+  await assert.rejects(schedule.addArchives([archive, { ...archive, channel: stars.id }]), { statusCode: 400 });
   assert.equal(schedule.snapshot().specialLives.some(({ id }) => id === 'archive1234'), false);
-  assert.deepEqual(schedule.addArchives([archive, archive]), { added: 1, skipped: 1 });
-  assert.deepEqual(schedule.addArchives([{ ...archive, url: 'https://youtu.be/B3OxuRMofcM' }]), { added: 0, skipped: 1 });
+  assert.deepEqual(await schedule.addArchives([archive, archive]), { added: 1, skipped: 1 });
+  assert.deepEqual(await schedule.addArchives([{ ...archive, url: 'https://youtu.be/B3OxuRMofcM' }]), { added: 0, skipped: 1 });
 
   const restarted = open();
   await restarted.refresh();

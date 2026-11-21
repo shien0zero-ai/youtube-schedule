@@ -136,6 +136,11 @@ function matchesChannelName(channel, query) {
   return [channel.name, ...(channel.aliases ?? [])].some((name) => searchValue(name).includes(query));
 }
 
+function streamTitle({ title, holoduleTitle }) {
+  if (typeof title === "string" && title.trim()) return title;
+  return typeof holoduleTitle === "string" ? holoduleTitle.trim() : "";
+}
+
 function setMessage(node, value = "", kind = "success") {
   node.textContent = value;
   node.dataset.kind = kind;
@@ -180,7 +185,7 @@ function sortMusicVideos(videos, channels, order) {
       const leftReading = readings.get(left);
       const rightReading = readings.get(right);
       return Number(!leftReading) - Number(!rightReading) || nameOrder.compare(leftReading, rightReading) ||
-        nameOrder.compare(left.title ?? "", right.title ?? "");
+        nameOrder.compare(streamTitle(left), streamTitle(right));
     });
   }
 }
@@ -401,7 +406,7 @@ function renderStream(stream, channel, { mv = false, showDay = false, order = "n
       meta.append(element("span", "stream-metric", `${stream.likeCount.toLocaleString("ja-JP")} 件の高評価`));
     }
   }
-  body.append(meta, element("h4", "stream-title", stream.title || "タイトル未定"));
+  body.append(meta, element("h4", "stream-title", streamTitle(stream) || "タイトル未定"));
   const channelName = channel?.name ?? stream.channelName;
   if (channelName) body.append(element("p", "stream-channel", channelName));
   card.append(preview, body);
@@ -508,6 +513,7 @@ function renderSchedule() {
     if (channel?.hidden) return false;
     if (groups && groups !== (channel?.group ?? stream.channelGroup)) return false;
     return !query || matchingChannels.has(stream.channelId) || searchValue(stream.title).includes(query) ||
+      (stream.holoduleTitle && searchValue(stream.holoduleTitle).includes(query)) ||
       (!channel && searchValue(stream.channelName).includes(query)) ||
       (stream.memberReading && searchValue(stream.memberReading).includes(query));
   };

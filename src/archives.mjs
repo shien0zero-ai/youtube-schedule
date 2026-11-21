@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isNonBroadcast } from './broadcasts.mjs';
 import { ScheduleError } from './schedule-error.mjs';
 import { youtubeVideoId } from './youtube.mjs';
 
@@ -71,10 +72,12 @@ export function prepareArchives(entries, channels, now) {
 
     const videoId = youtubeVideoId(url);
     const id = videoId ?? 'archive-' + createHash('sha256').update(JSON.stringify([owner.id, date, url.href])).digest('hex');
+    const title = entry.title?.trim() || null;
+    if (isNonBroadcast({ id, title, url: url.href })) throw invalid('公開ライブ配信のアーカイブ URL を指定してください。');
     return {
       id,
       channelId: owner.id,
-      title: entry.title?.trim() || `${owner.name} の配信`,
+      title,
       status: 'past',
       startAt: null,
       scheduleDate: date,

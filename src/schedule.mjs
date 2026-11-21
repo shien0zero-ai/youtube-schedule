@@ -1,15 +1,20 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { prepareArchives } from './archives.mjs';
+import { isNonBroadcast, knownTitle } from './broadcasts.mjs';
 import { rosterGroups } from './data/hololive-roster.mjs';
+import { holoduleBroadcast } from './hololive.mjs';
 import { createMusicVideoCatalog } from './music-videos.mjs';
 import { ScheduleError } from './schedule-error.mjs';
 import { initialSpecialLives, specialLiveChannelIds } from './special-lives.mjs';
 import { isSpecialLive } from './special-lives-classification.mjs';
+import { youtubeVideoId } from './youtube.mjs';
 
 const DAY = 24 * 60 * 60 * 1000;
 const REFRESH_INTERVAL = 2 * 60 * 1000;
 const FORCED_REFRESH_INTERVAL = 15 * 1000;
+const ARCHIVE_LOOKUP_LIMIT = 6;
+const ARCHIVE_RETRY_INTERVAL = 6 * 60 * 60 * 1000;
 const aliasesByChannel = new Map(Object.values(rosterGroups).flat().map(([id, , aliases]) => [id, aliases]));
 
 function readState(path) {
@@ -48,6 +53,15 @@ function displayStream(stream, time) {
   return { ...archive, status: 'past', archiveUnconfirmed: true };
 }
 
+function withSourceTitles(stream, names) {
+  const name = names.get(stream.channelId);
+  return {
+    ...stream,
+    title: knownTitle(stream.title, name),
+    ...(stream.holoduleTitle !== undefined ? { holoduleTitle: knownTitle(stream.holoduleTitle, name) } : {}),
+  };
+}
+
 function mergeStreams(existing, incoming, time) {
   const merged = new Map(existing.map((stream) => [stream.id, stream]));
   for (const stream of incoming) {
@@ -57,6 +71,8 @@ function mergeStreams(existing, incoming, time) {
       ? previous?.endAt ?? (liveEnded ? new Date(time).toISOString() : null)
       : null);
     const mergedStream = { ...stream, endAt };
+    if (!stream.title && previous?.title) mergedStream.title = previous.title;
+    if (stream.isBroadcast == null && previous?.isBroadcast != null) mergedStream.isBroadcast = previous.isBroadcast;
     if (previous?.manualArchive) {
       mergedStream.manualArchive = true;
       if (!stream.startAt && !stream.scheduleDate && previous.scheduleDate) {
@@ -80,15 +96,19 @@ function updateSpecialLives(saved, official, time) {
   return mergeStreams(existing, incoming, time);
 }
 
-export function createScheduleService({ file, getHololive, getYouTubeChannel, normalizeChannelUrl, getMusicVideos, getRecentMusicVideos, now = Date.now }) {
+export function createScheduleService({ file, getHololive, getYouTubeChannel, getYouTubeVideos, normalizeChannelUrl, getMusicVideos, getRecentMusicVideos, now = Date.now }) {
   const music = createMusicVideoCatalog({ scheduleFile: file, now, getMusicVideos, getRecentMusicVideos });
   let state = { hidden: [], holoduleIds: [], specialLives: [], ...readState(file) };
   if (!state.specialLives.length && state.holoduleIds.length) {
     state.specialLives = updateSpecialLives([], state, now());
   }
+  const savedNames = new Map([...state.roster, ...state.custom].map(({ id, name }) => [id, name]));
+  state.streams = state.streams.map((stream) => withSourceTitles(stream, savedNames));
+  state.specialLives = state.specialLives.map((stream) => withSourceTitles(stream, savedNames));
   let lastAttempt = null;
   let warnings = [];
   let refreshing;
+  const archiveRetries = new Map();
 
   function save(next) {
     next.streams = retainStreams(next.streams, [...next.roster, ...next.custom], next.preferences, now(), next.holoduleIds);
@@ -99,10 +119,49 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     state = next;
   }
 
+  async function archiveDetails(streams) {
+    const ids = [...new Set(streams.map((stream) => youtubeVideoId(URL.parse(stream.url))).filter(Boolean))];
+    if (!getYouTubeVideos || !ids.length) return new Map();
+    const details = await Promise.resolve().then(() => getYouTubeVideos(ids.slice(0, ARCHIVE_LOOKUP_LIMIT), { verifyBroadcast: true })).catch(() => []);
+    return new Map(details.map((video) => [video.id, video]));
+  }
+
+  function recoverArchives(time) {
+    if (!getYouTubeVideos) return new Map();
+    for (const [id, until] of archiveRetries) if (until <= time) archiveRetries.delete(id);
+    const listed = new Set(state.holoduleIds);
+    const candidates = [...state.streams, ...state.specialLives.filter(({ manualArchive }) => manualArchive)].filter((stream) =>
+      !isNonBroadcast(stream) && (!stream.title || stream.isBroadcast == null) &&
+      (!listed.has(stream.id) || stream.isBroadcast === undefined) &&
+      !archiveRetries.has(stream.id) && youtubeVideoId(URL.parse(stream.url)));
+    const selected = candidates.slice(0, ARCHIVE_LOOKUP_LIMIT);
+    for (const { id } of selected) archiveRetries.set(id, time + ARCHIVE_RETRY_INTERVAL);
+    return archiveDetails(selected);
+  }
+
+  function withArchiveDetails(stream, video, listed = false) {
+    if (!video) return stream;
+    const fromHolodule = listed || stream.holoduleTitle !== undefined;
+    const isBroadcast = isNonBroadcast(video) ? false
+      : video.isBroadcast ?? (fromHolodule ? holoduleBroadcast(stream, video) : stream.isBroadcast);
+    return {
+      ...stream,
+      title: stream.title ?? video.title ?? null,
+      isBroadcast,
+      ...(stream.manualArchive || isBroadcast !== true ? {} : {
+        status: video.status ?? stream.status,
+        startAt: video.startAt ?? stream.startAt,
+        endAt: video.endAt ?? stream.endAt,
+        missingFromSource: video.status === 'past' ? undefined : stream.missingFromSource,
+      }),
+    };
+  }
+
   async function refreshSources() {
     lastAttempt = now();
     const registered = state.custom;
     const hololive = Promise.resolve().then(getHololive).catch(() => null);
+    const archiveMetadata = recoverArchives(lastAttempt);
     const customStreams = [];
     const failures = [];
     const successful = new Set();
@@ -123,6 +182,7 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     }));
 
     const official = await hololive;
+    const archiveVideos = await archiveMetadata;
     const officialWarnings = official?.warnings ?? (official?.warning ? [official.warning] : []);
     const officialReady = official !== null && (official.scheduleAvailable ?? (officialWarnings.length === 0));
     const currentRoster = official?.channels?.length ? official.channels : state.roster;
@@ -136,15 +196,21 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     for (const id of officialUpdated) updatedChannels.add(id);
     if (officialReady) for (const { id } of previousHoloduleChannels) updatedChannels.add(id);
     const holoduleIds = officialReady ? official?.holoduleIds ?? [] : state.holoduleIds;
-    const incoming = [
+    const names = new Map([...roster, ...custom].map(({ id, name }) => [id, name]));
+    const candidates = [
       ...customStreams.filter(({ channelId }) => activeCustom.has(channelId)),
       ...(official?.streams ?? []),
-    ];
+    ].map((stream) => withSourceTitles(stream, names));
+    const incoming = candidates.filter((stream) => !isNonBroadcast(stream));
+    const excludedIds = new Set(candidates.filter(isNonBroadcast).map(({ id }) => id));
     const incomingIds = new Set(incoming.map(({ id }) => id));
     const previouslyListed = new Set(state.holoduleIds);
-    const existing = state.streams.map((stream) => {
+    const existing = state.streams.map((saved) => {
+      const wasListed = previouslyListed.has(saved.id);
+      const stream = withArchiveDetails(saved, archiveVideos.get(saved.id), wasListed);
+      if (excludedIds.has(stream.id)) return { ...stream, isBroadcast: false };
       if (stream.status === 'past' || stream.missingFromSource || incomingIds.has(stream.id)) return stream;
-      const sourceUpdated = previouslyListed.has(stream.id) ? officialReady : updatedChannels.has(stream.channelId);
+      const sourceUpdated = wasListed ? officialReady : updatedChannels.has(stream.channelId);
       return sourceUpdated ? { ...stream, missingFromSource: true } : stream;
     });
     const streams = mergeStreams(existing, incoming, now());
@@ -156,7 +222,8 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     const hidden = new Set(state.hidden);
     const availableRoster = roster.filter(({ id }) =>
       presetIds.has(id) || retainedChannels.has(id) || hidden.has(id) || state.preferences[id] === true);
-    const specialLives = officialReady ? updateSpecialLives(state.specialLives, official, now()) : state.specialLives;
+    const savedSpecialLives = state.specialLives.map((stream) => withArchiveDetails(stream, archiveVideos.get(stream.id)));
+    const specialLives = officialReady ? updateSpecialLives(savedSpecialLives, official, now()) : savedSpecialLives;
     save({ ...state, roster: availableRoster, custom, streams, holoduleIds, updatedAt, specialLives });
     if (officialReady) music.observeHolodule(official);
     warnings = [
@@ -195,7 +262,8 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     const streams = retainStreams(state.streams, channels.filter(({ hidden }) => !hidden), state.preferences, time, state.holoduleIds);
     const specialLives = state.specialLives.length ? new Map(initialSpecialLives) : initialSpecialLives;
     for (const stream of state.specialLives) {
-      specialLives.set(stream.id, { ...specialLives.get(stream.id), ...stream });
+      const archived = specialLives.get(stream.id);
+      specialLives.set(stream.id, { ...archived, ...stream, title: stream.title ?? archived?.title ?? null });
     }
     const hiddenIds = new Set(state.hidden);
     let specialLivesCount = 0;
@@ -210,7 +278,8 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
 
     return {
       channels,
-      streams: streams.map((stream) => displayStream(stream, time)).filter(Boolean),
+      streams: streams.filter((stream) => !isNonBroadcast(stream) && (stream.isBroadcast === true || stream.manualArchive))
+        .map((stream) => displayStream(stream, time)).filter(Boolean),
       specialLivesCount,
       ...(visibleSpecialLives ? { specialLives: visibleSpecialLives } : {}),
       ...music.snapshot(hiddenIds, includeMusicVideos),
@@ -219,14 +288,20 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     };
   }
 
-  function addArchives(entries) {
+  async function addArchives(entries) {
     const time = now();
     const channels = availableChannels().filter(({ hidden }) => !hidden);
     const archives = prepareArchives(entries, channels, time);
+    const known = new Map([...state.streams, ...state.specialLives].map((stream) => [stream.id, stream]));
+    const details = await archiveDetails(archives.filter((archive) => known.get(archive.id)?.isBroadcast == null));
     const streams = new Map(state.streams.map((stream) => [stream.id, stream]));
     const specialLives = new Map(state.specialLives.map((stream) => [stream.id, stream]));
     let added = 0;
     for (const [index, archive] of archives.entries()) {
+      const video = details.get(archive.id) ?? known.get(archive.id);
+      if (video && (isNonBroadcast(video) || (video.status === 'upcoming' || video.status === 'live') && video.isBroadcast === true)) {
+        throw new ScheduleError(400, `${index + 1} 件目: 公開ライブ配信のアーカイブ URL を指定してください。`);
+      }
       const special = entries[index].specialLive === true;
       if (special && (!specialLiveChannelIds.has(archive.channelId) || archive.platform !== 'youtube')) {
         throw new ScheduleError(400, `${index + 1} 件目: 3Dライブにはホロライブのチャンネルと YouTube のアーカイブ URL を指定してください。`);
@@ -236,7 +311,10 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
       const existing = records.get(archive.id);
       if (existing && (existing.manualArchive || existing.channelId !== archive.channelId ||
         (existing.status !== 'past' && !existing.missingFromSource))) continue;
-      records.set(archive.id, existing?.status === 'past' ? { ...existing, manualArchive: true } : archive);
+      const titled = withArchiveDetails(archive, video);
+      records.set(archive.id, existing?.status === 'past'
+        ? { ...existing, title: existing.title ?? titled.title, manualArchive: true }
+        : titled);
       added++;
     }
     if (added) save({ ...state, streams: [...streams.values()], specialLives: [...specialLives.values()], updatedAt: new Date(time).toISOString() });
@@ -275,7 +353,10 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
 
     const channel = { id: result.channelId, name: result.name, group: '追加チャンネル', url };
     if (result.avatar) channel.avatar = result.avatar;
-    const streams = mergeStreams(state.streams, result.streams.map((stream) => ({ ...stream, channelId: channel.id })), now());
+    const channelNames = new Map([[channel.id, channel.name]]);
+    const published = result.streams.filter((stream) => !isNonBroadcast(stream))
+      .map((stream) => withSourceTitles({ ...stream, channelId: channel.id }, channelNames));
+    const streams = mergeStreams(state.streams, published, now());
     save({ ...state, custom: [...state.custom, channel], streams, updatedAt: new Date(now()).toISOString() });
     return { ...channel, custom: true, keepPast: true, hidden: false };
   }
