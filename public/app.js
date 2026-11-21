@@ -10,6 +10,13 @@ const mvStatusLabels = {
   past: "公開済み",
 };
 
+const musicKindLabels = { original: "オリジナル", cover: "カバー" };
+const mvMetrics = {
+  views: { field: "viewCount", label: "再生回数" },
+  trending: { field: "viewGain7d", label: "過去7日間の再生増加数" },
+  likes: { field: "likeCount", label: "高評価数" },
+};
+
 const platformLabels = new Map([
   ["youtube", "YouTube"],
   ["youtube.com", "YouTube"],
@@ -43,6 +50,7 @@ const archiveDay = new Intl.DateTimeFormat("ja-JP", { timeZone, year: "numeric",
 const dateKey = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
 const clock = new Intl.DateTimeFormat("ja-JP", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 const nameOrder = new Intl.Collator("ja-JP");
+const gainFormat = new Intl.NumberFormat("ja-JP", { signDisplay: "exceptZero" });
 
 const byId = (id) => document.getElementById(id);
 const dateInput = byId("schedule-date");
@@ -50,8 +58,9 @@ const dateShortcuts = [...document.querySelectorAll("[data-date-offset]")];
 const schedulePanel = byId("schedule-panel");
 const scheduleSearch = byId("schedule-search");
 const scheduleGroup = byId("schedule-group");
-const mvSort = byId("mv-sort");
-const mvSortButtons = [...mvSort.querySelectorAll("[data-mv-order]")];
+const mvControls = byId("mv-controls");
+const mvSortButtons = [...byId("mv-sort").querySelectorAll("[data-mv-order]")];
+const mvKindButtons = [...byId("mv-kind").querySelectorAll("[data-mv-kind]")];
 const dialog = byId("settings-dialog");
 const rosterSearch = byId("roster-search");
 const rosterGroup = byId("roster-group");
@@ -76,6 +85,7 @@ const state = {
     mv: { dateSelection: "", limit: catalogPageSize },
   },
   mvOrder: "newest",
+  mvKind: "",
   data: null,
   error: null,
   loading: true,
@@ -149,6 +159,30 @@ function newestFirst(streams) {
   });
   dated.sort((left, right) => right.day.localeCompare(left.day) || right.time - left.time);
   return dated.map(({ stream }) => stream);
+}
+
+function sortMusicVideos(videos, channels, order) {
+  const metric = mvMetrics[order]?.field;
+  if (metric) {
+    // The fetched list starts in date order, which stays intact for equal or missing values.
+    videos.sort((left, right) => {
+      const leftKnown = Number.isFinite(left[metric]);
+      const rightKnown = Number.isFinite(right[metric]);
+      if (leftKnown && rightKnown) return right[metric] - left[metric];
+      return Number(rightKnown) - Number(leftKnown);
+    });
+  } else if (order === "member") {
+    const readings = new Map(videos.map((video) => {
+      const channelName = channels.get(video.channelId)?.name ?? video.channelName;
+      return [video, searchValue(video.memberReading?.trim() || channelName)];
+    }));
+    videos.sort((left, right) => {
+      const leftReading = readings.get(left);
+      const rightReading = readings.get(right);
+      return Number(!leftReading) - Number(!rightReading) || nameOrder.compare(leftReading, rightReading) ||
+        nameOrder.compare(left.title ?? "", right.title ?? "");
+    });
+  }
 }
 
 function dayLabel(day, formatter = shortDay) {
@@ -321,7 +355,7 @@ function media(container, source, fallbackText) {
   container.append(image);
 }
 
-function renderStream(stream, channel, { mv = false, showDay = false } = {}) {
+function renderStream(stream, channel, { mv = false, showDay = false, order = "newest" } = {}) {
   const streamUrl = webUrl(stream.url);
   const card = element(streamUrl ? "a" : "article", "stream");
   if (streamUrl) {
@@ -354,8 +388,18 @@ function renderStream(stream, channel, { mv = false, showDay = false } = {}) {
   }
   const platform = streamPlatform(stream.platform, streamUrl);
   if (platform) meta.append(element("span", "stream-platform", platform));
-  if (mv && Number.isFinite(stream.viewCount)) {
-    meta.append(element("span", "stream-views", `${stream.viewCount.toLocaleString("ja-JP")} 回再生`));
+  if (mv) {
+    const kind = musicKindLabels[stream.musicKind];
+    if (kind) meta.append(element("span", "", kind));
+    if (Number.isFinite(stream.viewCount)) {
+      meta.append(element("span", "stream-views", `${stream.viewCount.toLocaleString("ja-JP")} 回再生`));
+    }
+    if (order === "trending" && Number.isFinite(stream.viewGain7d)) {
+      meta.append(element("span", "stream-metric", `直近7日以内で ${gainFormat.format(stream.viewGain7d)} 回再生`));
+    }
+    if (order === "likes" && Number.isFinite(stream.likeCount)) {
+      meta.append(element("span", "stream-metric", `${stream.likeCount.toLocaleString("ja-JP")} 件の高評価`));
+    }
   }
   body.append(meta, element("h4", "stream-title", stream.title || "タイトル未定"));
   const channelName = channel?.name ?? stream.channelName;
@@ -399,6 +443,12 @@ function renderAfterFilterChange() {
   renderSchedule();
 }
 
+function setMusicKind(kind) {
+  state.mvKind = kind;
+  state.catalogViews.mv.limit = catalogPageSize;
+  for (const button of mvKindButtons) button.setAttribute("aria-pressed", String(button.dataset.mvKind === kind));
+}
+
 function renderMore(catalog) {
   const control = element("div", "schedule-more");
   const button = element("button", "button secondary", "さらに表示");
@@ -423,10 +473,11 @@ function renderSchedule() {
   const catalog = catalogTabs[status];
   const catalogView = state.catalogViews[status];
   const mv = status === "mv";
-  const byViews = mv && state.mvOrder === "views";
+  const musicKind = mv ? state.mvKind : "";
+  const flatMusicList = mv && state.mvOrder !== "newest";
   const scheduleDate = selectedDate(state.dateSelection, now);
   const date = catalogView ? selectedDate(catalogView.dateSelection, now) : scheduleDate;
-  mvSort.hidden = !mv;
+  mvControls.hidden = !mv;
   updateDateControls(date, now);
   const updated = validDate(data?.updatedAt);
   byId("sync-status").textContent = loading
@@ -457,10 +508,13 @@ function renderSchedule() {
     if (channel?.hidden) return false;
     if (groups && groups !== (channel?.group ?? stream.channelGroup)) return false;
     return !query || matchingChannels.has(stream.channelId) || searchValue(stream.title).includes(query) ||
-      (!channel && searchValue(stream.channelName).includes(query));
+      (!channel && searchValue(stream.channelName).includes(query)) ||
+      (stream.memberReading && searchValue(stream.memberReading).includes(query));
   };
   const matches = data.streams.filter((stream) => (!scheduleDate || streamDay(stream) === scheduleDate) && matchesFilters(stream));
-  const matchingCatalog = catalog ? data[catalog.items]?.filter((stream) => (!date || streamDay(stream) === date) && matchesFilters(stream)) : null;
+  const matchingCatalog = catalog ? data[catalog.items]?.filter((stream) => (
+    (!date || streamDay(stream) === date) && (!musicKind || stream.musicKind === musicKind) && matchesFilters(stream)
+  )) : null;
 
   byId("count-all").textContent = matches.length;
   for (const key of Object.keys(statusLabels)) {
@@ -480,8 +534,8 @@ function renderSchedule() {
       if (!leftDate || !rightDate) return Number(!leftDate) - Number(!rightDate);
       return descending ? rightDate - leftDate : leftDate - rightDate;
     });
-  } else if (byViews && visible) {
-    visible.sort((left, right) => (right.viewCount ?? -1) - (left.viewCount ?? -1));
+  } else if (flatMusicList && visible) {
+    sortMusicVideos(visible, channels, state.mvOrder);
   }
 
   const content = [];
@@ -493,7 +547,13 @@ function renderSchedule() {
     );
     content.push(heading);
   } else if (mv) {
-    content.push(element("h3", "catalog-heading", "ミュージックビデオ"));
+    const heading = element("div", "catalog-heading");
+    heading.append(element("h3", "", "ミュージックビデオ"));
+    const metric = mvMetrics[state.mvOrder];
+    if (metric && visible?.length && !visible.some((video) => Number.isFinite(video[metric.field]))) {
+      heading.append(element("p", "", `${metric.label}がまだ確認できないため、新着順で表示しています。`));
+    }
+    content.push(heading);
   }
 
   if (!visible) {
@@ -502,17 +562,18 @@ function renderSchedule() {
       : stateCard(`${catalog.label}を取得できませんでした`, error, { action: () => loadSchedule(), actionLabel: "もう一度試す" }));
   } else if (visible.length) {
     const shown = catalogView ? visible.slice(0, catalogView.limit) : visible;
-    if (byViews) {
-      content.push(renderStreamList(shown, channels, { mv, showDay: true }));
+    if (flatMusicList) {
+      content.push(renderStreamList(shown, channels, { mv, showDay: true, order: state.mvOrder }));
     } else {
       content.push(...renderStreams(shown, channels, { descending, dateFormat: catalog ? archiveDay : shortDay, mv }));
     }
     if (shown.length < visible.length) content.push(renderMore(catalogView));
-  } else if (groups || query) {
-    content.push(stateCard("条件に一致する配信はありません", "", {
+  } else if (groups || query || musicKind) {
+    content.push(stateCard(mv ? "条件に一致するMVはありません" : "条件に一致する配信はありません", "", {
       action: () => {
         scheduleGroup.value = "";
         scheduleSearch.value = "";
+        if (musicKind) setMusicKind("");
         renderAfterFilterChange();
         scheduleSearch.focus();
       },
@@ -774,6 +835,13 @@ for (const button of mvSortButtons) {
     state.mvOrder = order;
     state.catalogViews.mv.limit = catalogPageSize;
     for (const candidate of mvSortButtons) candidate.setAttribute("aria-pressed", String(candidate === button));
+    renderSchedule();
+  });
+}
+for (const button of mvKindButtons) {
+  button.addEventListener("click", () => {
+    if (button.dataset.mvKind === state.mvKind) return;
+    setMusicKind(button.dataset.mvKind);
     renderSchedule();
   });
 }

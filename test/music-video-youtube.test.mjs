@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { isMusicVideoTitle } from '../src/music-video-classification.mjs';
+import { classifyMusicKind, isMusicVideoTitle } from '../src/music-video-classification.mjs';
 import { getMusicVideos, getRecentMusicVideos } from '../src/music-video-youtube.mjs';
 
 const talent = 'UC5CwaMl1eIgY8h02uZw7u8A';
@@ -28,16 +28,30 @@ test('classifies MVs and explicit covers and excludes related non-MV programs', 
   ]) assert.equal(isMusicVideoTitle(title), false, title);
 });
 
+test('distinguishes explicit original and cover cues from ambiguous MV titles', () => {
+  assert.equal(classifyMusicKind('新曲【オリジナル曲】'), 'original');
+  assert.equal(classifyMusicKind('Song【ＯＲＩＧＩＮＡＬ】'), 'original');
+  assert.equal(classifyMusicKind('【Original Song / Cover】雨', 'This is my original song.'), 'cover');
+  assert.equal(classifyMusicKind('【オリジナルＭＶ】雨 歌ってみた'), 'cover');
+  assert.equal(classifyMusicKind('夜空 Music Video', '▼ 本家様：原作者\n撮影・編集：MV制作チーム'), 'cover');
+  assert.equal(classifyMusicKind('夜空 Music Video', 'My first original song.'), 'original');
+  assert.equal(classifyMusicKind('夜空 Music Video', '本家様：原作者\nThis is my original song.'), null);
+  assert.equal(classifyMusicKind('【オリジナルＭＶ】夜空', '他のオリジナル曲はこちらのプレイリストから'), null);
+  assert.equal(classifyMusicKind('Music Video [Discover]'), null);
+});
+
 test('loads official music video metadata in bounded batches and preserves premiere timestamps', async () => {
   const requested = Array.from({ length: 53 }, (_, index) => String(index).padStart(11, '0'));
   const [regular, upcoming, live, ended, privateId, unlisted, concert, short] = requested;
   const items = [
-    video(regular, 'ビビデバ / 星街すいせい(official)', { statistics: { viewCount: '194000023' } }),
+    video(regular, 'ビビデバ / 星街すいせい(official)', { statistics: { viewCount: '194000023', likeCount: '4500001' } }),
     video(upcoming, '【歌ってみた】次の曲', {
       liveStreamingDetails: { scheduledStartTime: '2026-11-21T22:00:00+09:00' },
+      statistics: { likeCount: '0' },
     }),
     video(live, '【MV】新曲', {
       liveStreamingDetails: { actualStartTime: '2026-11-21T13:00:17Z' },
+      statistics: { likeCount: '-1' },
     }),
     video(ended, '【MV】プレミア配信曲', {
       liveStreamingDetails: {
@@ -72,6 +86,9 @@ test('loads official music video metadata in bounded batches and preserves premi
   ]);
   assert.equal(actual[3].endAt, '2026-11-20T13:10:00.000Z');
   assert.equal(actual[3].publishedAt, '2026-11-20T12:00:00.000Z');
+  assert.deepEqual(actual.map(({ likeCount, musicKind }) => [likeCount, musicKind]), [
+    [4500001, null], [0, 'cover'], [null, null], [null, null],
+  ]);
   assert.equal(actual[0].url, `https://www.youtube.com/watch?v=${regular}`);
   assert.equal(actual[0].thumbnail, `https://i.ytimg.com/vi/${regular}/hqdefault.jpg`);
   assert.equal(actual[0].platform, 'youtube');
@@ -118,7 +135,7 @@ test('reads recent public Atom MV entries without an API key', async () => {
   const entry = (id, title, channelId = talent) => `
     <entry><yt:videoId>${id}</yt:videoId><yt:channelId>${channelId}</yt:channelId>
       <title>${title}</title><published>2026-11-20T21:00:00+09:00</published>
-      <media:group><media:community><media:statistics views='1051'/></media:community></media:group>
+      <media:group><media:description>原曲：星</media:description><media:community><media:statistics views='1051'/></media:community></media:group>
     </entry>`;
   const actual = await getRecentMusicVideos([talent, another], {
     apiKey: null,
@@ -136,8 +153,8 @@ test('reads recent public Atom MV entries without an API key', async () => {
       </feed>`);
     },
   });
-  assert.deepEqual(actual.map(({ title, status, startAt, viewCount }) => ({ title, status, startAt, viewCount })), [
-    { title: '【MV】Wind & 星', status: 'past', startAt: '2026-11-20T12:00:00.000Z', viewCount: 1051 },
+  assert.deepEqual(actual.map(({ title, status, startAt, viewCount, likeCount, musicKind }) => ({ title, status, startAt, viewCount, likeCount, musicKind })), [
+    { title: '【MV】Wind & 星', status: 'past', startAt: '2026-11-20T12:00:00.000Z', viewCount: 1051, likeCount: null, musicKind: 'cover' },
   ]);
 });
 

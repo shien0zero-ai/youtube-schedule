@@ -86,14 +86,24 @@
               <span class="sr-only">配信タイトル・チャンネル名で検索</span>
               <input id="schedule-search" type="search" placeholder="タイトル・チャンネル名">
             </label>
-            <div class="mv-sort" id="mv-sort" role="group" aria-label="MVの並び順" hidden>
-              <button type="button" data-mv-order="newest" aria-pressed="true">新着順</button>
-              <button type="button" data-mv-order="views" aria-pressed="false">再生回数順</button>
-            </div>
             <label class="select-field">
               <span class="sr-only">所属グループ</span>
               <select id="schedule-group"><option value="">すべてのグループ</option></select>
             </label>
+            <div class="mv-controls" id="mv-controls" hidden>
+              <div class="mv-options" id="mv-sort" role="group" aria-label="MVの並び順">
+                <button type="button" data-mv-order="newest" aria-pressed="true">新着順</button>
+                <button type="button" data-mv-order="views" aria-pressed="false">再生回数順</button>
+                <button type="button" data-mv-order="trending" aria-pressed="false">急上昇順</button>
+                <button type="button" data-mv-order="member" aria-pressed="false">メンバー順</button>
+                <button type="button" data-mv-order="likes" aria-pressed="false">高評価順</button>
+              </div>
+              <div class="mv-options" id="mv-kind" role="group" aria-label="楽曲の種類">
+                <button type="button" data-mv-kind="" aria-pressed="true">すべて</button>
+                <button type="button" data-mv-kind="original" aria-pressed="false">オリジナル</button>
+                <button type="button" data-mv-kind="cover" aria-pressed="false">カバー</button>
+              </div>
+            </div>
           </div>
         </div>
 

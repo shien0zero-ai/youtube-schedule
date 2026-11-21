@@ -1,4 +1,4 @@
-import { isMusicVideoTitle, isShortVideoTitle } from './music-video-classification.mjs';
+import { classifyMusicKind, isMusicVideoTitle, isShortVideoTitle } from './music-video-classification.mjs';
 import { youtubeApi } from './youtube.mjs';
 
 const videoIdPattern = /^[A-Za-z0-9_-]{11}$/;
@@ -21,13 +21,13 @@ function dateTime(value) {
   return Number.isFinite(time) ? new Date(time).toISOString() : null;
 }
 
-function viewCount(value) {
+function publicCount(value) {
   if ((typeof value !== 'string' && typeof value !== 'number') || !/^\d+$/.test(String(value))) return null;
   const count = Number(value);
   return Number.isSafeInteger(count) ? count : null;
 }
 
-function musicVideo({ id, title, channelId, status, startAt, endAt = null, publishedAt, views }) {
+function musicVideo({ id, title, description, channelId, status, startAt, endAt = null, publishedAt, views, likes }) {
   return {
     id,
     title,
@@ -39,7 +39,9 @@ function musicVideo({ id, title, channelId, status, startAt, endAt = null, publi
     url: `https://www.youtube.com/watch?v=${id}`,
     thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
     platform: 'youtube',
-    viewCount: viewCount(views),
+    viewCount: publicCount(views),
+    likeCount: publicCount(likes),
+    musicKind: classifyMusicKind(title, description),
   };
 }
 
@@ -78,8 +80,8 @@ function fromApi(item, includeKnown) {
     else if (scheduledStart || snippet.liveBroadcastContent === 'upcoming') broadcastStatus = 'upcoming';
   }
   return musicVideo({
-    id, title: snippet.title, channelId: snippet.channelId, status: broadcastStatus,
-    startAt, endAt, publishedAt, views: statistics?.viewCount,
+    id, title: snippet.title, description: snippet.description, channelId: snippet.channelId,
+    status: broadcastStatus, startAt, endAt, publishedAt, views: statistics?.viewCount, likes: statistics?.likeCount,
   });
 }
 
@@ -146,7 +148,10 @@ async function readPublicFeed(channelId, { fetchImpl, signal }) {
 
     const [, doubleQuoted, singleQuoted] = entry.match(/<media:statistics\b[^>]*\sviews\s*=\s*(?:"(\d+)"|'(\d+)')/i) ?? [];
     seen.add(id);
-    results.push(musicVideo({ id, title, channelId, status: 'past', startAt, publishedAt: startAt, views: doubleQuoted ?? singleQuoted }));
+    results.push(musicVideo({
+      id, title, description: feedText(entry, 'media:description'), channelId,
+      status: 'past', startAt, publishedAt: startAt, views: doubleQuoted ?? singleQuoted,
+    }));
   }
   return results;
 }

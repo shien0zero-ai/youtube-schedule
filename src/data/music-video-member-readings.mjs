@@ -1,0 +1,91 @@
+import { officialHololiveChannelId } from './hololive-roster.mjs';
+
+// Names and readings follow the official talent roster and debut announcements.
+// https://hololive.hololivepro.com/talents/
+// https://hololive.hololivepro.com/news/20260918-01-411/
+// https://hololive.hololivepro.com/news/20241107-01-310/
+export const musicVideoMemberReadings = new Map([
+  // hololive JP
+  [officialHololiveChannelId, 'ホロライブこうしき'],
+  ['UCp6993wxpyDPHUpavwDFqgg', 'ときのそら'],
+  ['UCDqI2jOz0weumE8s7paEk6g', 'ロボこさん'],
+  ['UC-hM6YJuNYVAmUWxeIr9FeA', 'さくらみこ'],
+  ['UC5CwaMl1eIgY8h02uZw7u8A', 'ほしまちすいせい'],
+  ['UC0TXe_LYZ4scaW2XMyi5_kw', 'あずき'],
+  ['UCFTLzh12_nrtzqBPsTCqenA', 'アキ・ローゼンタール'],
+  ['UC1CfXB_kRs3C-zaeTG3oGyg', 'あかいはあと'],
+  ['UCdn5BQ06XqgXoAxIhbqw5Rg', 'しらかみフブキ'],
+  ['UCQ0UDLQCjY0rmuxCDE38FGg', 'なついろまつり'],
+  ['UC7fk0CB07ly8oSl0aqKkqFg', 'なきりあやめ'],
+  ['UC1suqwovbL1kzsoaZgFZLKg', 'ゆづきちょこ'],
+  ['UCvzGlP9oQwU--Y0r9id_jnA', 'おおぞらスバル'],
+  ['UCp-5t9SrOQwXMU7iIjQfARg', 'おおかみミオ'],
+  ['UCvaTdHTWBGv3MKj3KVqJVCw', 'ねこまたおかゆ'],
+  ['UChAnqc_AY5_I3Px5dig3X1Q', 'いぬがみころね'],
+  ['UC1DCedRgGHBdm81E1llLhOQ', 'うさだぺこら'],
+  ['UCvInZx9h3jC2JzsIzoOebWg', 'しらぬいフレア'],
+  ['UCdyqAaZDKHXg4Ahi7VENThQ', 'しろがねノエル'],
+  ['UCCzUftO8KOVkV4wQG1vkUvg', 'ほうしょうマリン'],
+  ['UCqm3BQLlJfvkTsX_hvm0UmA', 'つのまきわため'],
+  ['UC1uv2Oq6kNxgATlCiez59hw', 'とこやみトワ'],
+  ['UCa9Y57gfeY0Zro_noHRVrnw', 'ひめもりルーナ'],
+  ['UCFKOVgVbGmX65RxO3EtH3iw', 'ゆきはなラミィ'],
+  ['UCAWSyEs_Io8MtpY3m-zqILA', 'ももすずねね'],
+  ['UCUKD-uaobj9jiqB-VXt71mA', 'ししろぼたん'],
+  ['UCK9V2B22uJYu3N7eR_BT9QA', 'おまるポルカ'],
+  ['UCENwRMx5Yh42zWpzURebzTw', 'ラプラス・ダークネス'],
+  ['UCs9_O1tRPMQTHQ-N_L6FU2g', 'たかねルイ'],
+  ['UC6eWCld0KwmyHFbAqK3V-Rw', 'はくいこより'],
+  ['UC_vMYWcDjmfdpH6r4TTn1MQ', 'かざまいろは'],
+  ['UCIBY1ollUsauvVi4hW4cumw', 'さかまたクロエ'],
+  ['UC8eitCE9Z6EwUCs-VUi1blg', 'あちちめら'],
+  ['UCROQtXcp2loQEmvpe5rhJzQ', 'そらしなそぴあ'],
+  ['UCy9mgxB8pn2C4aNK_MPthDQ', 'すずなつづり'],
+  ['UCSjQDxud2HkAO2DVD3lwxmw', 'ひゃくとうキョーコ'],
+  ['UCozx5csNhCx1wsVq3SZVkBQ', 'ホロアナルーム'],
+
+  // hololive ID
+  ['UCOyYb1c43VlX9rc_lT6NKQw', 'アユンダ・リス'],
+  ['UCP0BspO_AMEe3aQqqpo89Dg', 'ムーナ・ホシノヴァ'],
+  ['UCAoy6rzhSf4ydcYjJw3WoVg', 'アイラニ・イオフィフティーン'],
+  ['UCYz_5n-uDuChHtLo7My1HnQ', 'クレイジー・オリー'],
+  ['UC727SQYUvx5pDDGQpTICNWg', 'アーニャ・メルフィッサ'],
+  ['UChgTyjG-pdNvxxhdsXfHQ5Q', 'パヴォリア・レイネ'],
+  ['UCTvHWSfBZgtxE4sILOaurIQ', 'ベスティア・ゼータ'],
+  ['UCZLZ8Jjx_RN2CXloOmgTHVg', 'カエラ・コヴァルスキア'],
+  ['UCjLEmnpCNeisMxy134KPwWw', 'こぼ・かなえる'],
+
+  // hololive EN
+  ['UCL_qhgtOy0dy1Agp8vkySQg', 'もりカリオペ'],
+  ['UCHsx4Hqa-1ORjQTh9TYDhww', 'たかなしキアラ'],
+  ['UCMwGHR0BTZuLsmjY_NT5Pwg', 'にのまえいなにす'],
+  ['UCyl1z3jo3XHR1riLFKG5UAg', 'ワトソン・アメリア'],
+  ['UC8rcEBzJSleTkf_-agPM20g', 'アイリス'],
+  ['UCmbs8T6MWqUHP1tIQvSgKrg', 'オーロ・クロニー'],
+  ['UCgmPnx-EEeOrZSg5Tiw7ZRQ', 'ハコス・ベールズ'],
+  ['UCgnfPPb9JI3e9A4cXHnWbyg', 'シオリ・ノヴェラ'],
+  ['UC9p_lqQ0FEDz327Vgf5JwqA', 'こせきビジュー'],
+  ['UC_sFNM0z0MWm9A6WlKPuMMg', 'ネリッサ・レイヴンクロフト'],
+  ['UCt9H_RpQzhxzlyBxFqrdHqA', 'フワモコ'],
+  ['UCW5uhrG1eCBYditmhL0Ykjw', 'エリザベス・ローズ・ブラッドフレイム'],
+  ['UCDHABijvPBnJm7F-KlNME3w', 'ジジ・ムリン'],
+  ['UCvN5h1ShZtc7nly3pezRayg', 'セシリア・イマーグリーン'],
+  ['UCl69AEx4MdqMZH7Jtsm7Tig', 'ラオーラ・パンテーラ'],
+
+  // hololive DEV_IS
+  ['UCWQtYtq9EOB4-I5P-3fh8lA', 'おとのせかなで'],
+  ['UCtyWhCj3AqKh2dXctLkDtng', 'いちじょうりりか'],
+  ['UCdXAk5MpyLD8594lm_OvtGQ', 'じゅうふうていらでん'],
+  ['UC1iA6_NT4mtAcIII6ygrvCw', 'とどろきはじめ'],
+  ['UC9LSiN9hXI55svYEBrrK-tw', 'いさきリオナ'],
+  ['UCuI_opAVX6qbxZY-a-AxFuQ', 'こがねいにこ'],
+  ['UCjk2nKmHzgH5Xy-C5qYRd5A', 'みずみやすう'],
+  ['UCKMWFR6lAstLa7Vbf5dH7ig', 'りんどうちはや'],
+  ['UCGzTVXqMQHa4AgJVJIVvtDQ', 'ききららヴィヴィ'],
+
+  // Official group channels
+  ['UCotXwY6s8pWmuWd_snKYjhg', 'ホロライブイングリッシュ'],
+  ['UCfrWoRGlawPQDQxxeIDRP0Q', 'ホロライブインドネシア'],
+  ['UCu2n3qHuOuQIygREMnWeQWg', 'フロウグロウ'],
+  ['UC10wVt6hoQiwySRhz7RdOUA', 'リグロス'],
+]);
