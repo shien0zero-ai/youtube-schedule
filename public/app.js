@@ -28,6 +28,7 @@ const emptyStates = {
 const timeZone = "Asia/Tokyo";
 const dayMilliseconds = 24 * 60 * 60 * 1000;
 const shortDay = new Intl.DateTimeFormat("ja-JP", { timeZone, month: "long", day: "numeric", weekday: "short" });
+const archiveDay = new Intl.DateTimeFormat("ja-JP", { timeZone, year: "numeric", month: "long", day: "numeric", weekday: "short" });
 const dateKey = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
 const clock = new Intl.DateTimeFormat("ja-JP", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 const nameOrder = new Intl.Collator("ja-JP");
@@ -49,6 +50,7 @@ const archiveDialog = byId("archive-dialog");
 const archiveForm = byId("archive-form");
 const archiveDate = byId("archive-date");
 const archiveChannel = byId("archive-channel");
+const archiveSpecial = byId("archive-special");
 const archiveCsvForm = byId("archive-csv-form");
 const refreshButton = byId("refresh");
 const tabs = [...document.querySelectorAll(".tab")];
@@ -56,6 +58,7 @@ const tabs = [...document.querySelectorAll(".tab")];
 const state = {
   status: "all",
   dateSelection: "today",
+  specialDateSelection: "",
   data: null,
   error: null,
   loading: true,
@@ -115,9 +118,9 @@ function streamDay(stream) {
   return date ? jstDateKey(date) : stream.scheduleDate ?? "";
 }
 
-function dayLabel(day) {
+function dayLabel(day, formatter = shortDay) {
   const date = validDate(`${day}T00:00:00+09:00`);
-  return date ? shortDay.format(date) : day;
+  return date ? formatter.format(date) : day;
 }
 
 function relativeDate(offset, now) {
@@ -125,19 +128,22 @@ function relativeDate(offset, now) {
   return jstDateKey(new Date(now.getTime() + Number(offset) * dayMilliseconds));
 }
 
-function updateDateControls() {
-  const now = new Date();
-  const selected = state.dateSelection === "today" ? jstDateKey(now) : state.dateSelection;
+function selectedDate(selection, now) {
+  return selection === "today" ? jstDateKey(now) : selection;
+}
+
+function updateDateControls(selected, now) {
   if (dateInput.value !== selected) dateInput.value = selected;
   for (const button of dateShortcuts) {
     button.setAttribute("aria-pressed", String(relativeDate(button.dataset.dateOffset, now) === selected));
   }
-  return selected;
 }
 
-function selectDate(date, now = new Date()) {
-  state.dateSelection = date === jstDateKey(now) ? "today" : date;
-  selectTab(byId("tab-all"));
+function selectDate(date, { now = new Date(), special = state.status === "special" } = {}) {
+  const selection = date === jstDateKey(now) ? "today" : date;
+  if (special) state.specialDateSelection = selection;
+  else state.dateSelection = selection;
+  selectTab(byId(special ? "tab-special" : "tab-all"));
 }
 
 async function request(path, options) {
@@ -175,13 +181,17 @@ function updateChannelControls(channels) {
   setGroups(scheduleGroup, visible);
   setGroups(rosterGroup, channels);
   byId("channel-count").textContent = visible.length.toLocaleString("ja-JP");
+  updateArchiveChannels(channels);
+}
 
+function updateArchiveChannels(channels) {
+  const eligible = channels.filter(({ hidden, specialLiveEligible }) => !hidden && (!archiveSpecial.checked || specialLiveEligible));
   const selected = archiveChannel.value;
-  const placeholder = new Option(visible.length ? "チャンネルを選択" : "登録できるチャンネルがありません", "", true, true);
+  const placeholder = new Option(eligible.length ? "チャンネルを選択" : "登録できるチャンネルがありません", "", true, true);
   placeholder.disabled = true;
-  visible.sort((left, right) => nameOrder.compare(left.name, right.name));
-  archiveChannel.replaceChildren(placeholder, ...visible.map(({ name, id }) => new Option(name, id)));
-  if (visible.some(({ id }) => id === selected)) archiveChannel.value = selected;
+  eligible.sort((left, right) => nameOrder.compare(left.name, right.name));
+  archiveChannel.replaceChildren(placeholder, ...eligible.map(({ name, id }) => new Option(name, id)));
+  if (eligible.some(({ id }) => id === selected)) archiveChannel.value = selected;
 }
 
 async function loadSchedule({ refresh = false } = {}) {
@@ -297,7 +307,7 @@ function renderStream(stream, channel) {
   return card;
 }
 
-function renderStreams(streams, channels, descending) {
+function renderStreams(streams, channels, descending, dateFormat = shortDay) {
   const groups = new Map();
   for (const stream of streams) {
     const day = streamDay(stream);
@@ -312,14 +322,18 @@ function renderStreams(streams, channels, descending) {
     const section = element("section", "stream-group");
     const list = element("div", "stream-list");
     list.append(...groups.get(day).map((stream) => renderStream(stream, channels.get(stream.channelId))));
-    section.append(element("h3", "stream-day", day ? dayLabel(day) : "日時未定"), list);
+    section.append(element("h3", "stream-day", day ? dayLabel(day, dateFormat) : "日時未定"), list);
     return section;
   });
 }
 
 function renderSchedule() {
   const { data, loading, error, status } = state;
-  const date = updateDateControls();
+  const now = new Date();
+  const special = status === "special";
+  const scheduleDate = selectedDate(state.dateSelection, now);
+  const date = special ? selectedDate(state.specialDateSelection, now) : scheduleDate;
+  updateDateControls(date, now);
   const updated = validDate(data?.updatedAt);
   byId("sync-status").textContent = loading
     ? "配信情報を取得中"
@@ -342,21 +356,26 @@ function renderSchedule() {
   const groups = scheduleGroup.value;
   const query = searchValue(scheduleSearch.value);
   const channels = new Map(data.channels.map((channel) => [channel.id, channel]));
-  const matches = data.streams.filter((stream) => {
+  const matchesFilters = (stream) => {
     const channel = channels.get(stream.channelId);
     if (channel?.hidden) return false;
-    if (date && streamDay(stream) !== date) return false;
     if (groups && groups !== channel?.group) return false;
     return !query || searchValue(stream.title).includes(query) || searchValue(channel?.name).includes(query);
-  });
+  };
+  const matches = data.streams.filter((stream) => (!scheduleDate || streamDay(stream) === scheduleDate) && matchesFilters(stream));
+  const specialLives = (data.specialLives ?? []).filter(({ channelId }) => !channels.get(channelId)?.hidden);
+  const matchingSpecialLives = special
+    ? specialLives.filter((stream) => (!date || streamDay(stream) === date) && matchesFilters(stream))
+    : specialLives;
 
   byId("count-all").textContent = matches.length;
   for (const key of Object.keys(statusLabels)) {
     byId("count-" + key).textContent = matches.filter((stream) => stream.status === key).length;
   }
+  byId("count-special").textContent = matchingSpecialLives.length;
 
-  const visible = status === "all" ? matches : matches.filter((stream) => stream.status === status);
-  const descending = status === "past";
+  const visible = special ? matchingSpecialLives : status === "all" ? matches : matches.filter((stream) => stream.status === status);
+  const descending = special || status === "past";
   visible.sort((left, right) => {
     const leftDate = validDate(left.startAt);
     const rightDate = validDate(right.startAt);
@@ -364,10 +383,20 @@ function renderSchedule() {
     return descending ? rightDate - leftDate : leftDate - rightDate;
   });
 
+  const content = [];
+  if (special) {
+    const heading = element("div", "special-archive-heading");
+    heading.append(
+      element("h3", "", "3Dライブの予定とアーカイブ"),
+      element("p", "", "ホロジュールの配信予定と、ホロライブ公式チャンネル・メンバーの公開アーカイブを掲載します。"),
+    );
+    content.push(heading);
+  }
+
   if (visible.length) {
-    schedulePanel.replaceChildren(...renderStreams(visible, channels, descending));
+    content.push(...renderStreams(visible, channels, descending, special ? archiveDay : shortDay));
   } else if (groups || query) {
-    schedulePanel.replaceChildren(stateCard("条件に一致する配信はありません", "", {
+    content.push(stateCard("条件に一致する配信はありません", "", {
       action: () => {
         scheduleGroup.value = "";
         scheduleSearch.value = "";
@@ -376,13 +405,21 @@ function renderSchedule() {
       },
       actionLabel: "絞り込みを解除",
     }));
+  } else if (special && date) {
+    content.push(stateCard(`${dayLabel(date, archiveDay)}の3Dライブはありません`, "", {
+      action: () => selectDate(""),
+      actionLabel: "全日程を表示",
+    }));
+  } else if (special) {
+    content.push(stateCard("表示できる3Dライブはありません", ""));
   } else if (data.warnings?.length || error) {
-    schedulePanel.replaceChildren(stateCard("この区分の配信情報はありません", "取得できた範囲の情報を表示しています。"));
+    content.push(stateCard("この区分の配信情報はありません", "取得できた範囲の情報を表示しています。"));
   } else if (date && status === "all") {
-    schedulePanel.replaceChildren(stateCard(`${dayLabel(date)}の配信はありません`, "取得済みの範囲から表示しています。"));
+    content.push(stateCard(`${dayLabel(date)}の配信はありません`, "取得済みの範囲から表示しています。"));
   } else {
-    schedulePanel.replaceChildren(stateCard(...emptyStates[status]));
+    content.push(stateCard(...emptyStates[status]));
   }
+  schedulePanel.replaceChildren(...content);
 }
 
 function selectTab(tab) {
@@ -497,6 +534,9 @@ async function mutateChannel(channel, method, body, success, focusTarget) {
         current.hidden = true;
       }
       state.data.streams = state.data.streams.filter(({ channelId }) => channelId !== channel.id);
+      if (state.data.specialLives) {
+        state.data.specialLives = state.data.specialLives.filter(({ channelId }) => channelId !== channel.id);
+      }
     } else if (current) {
       Object.assign(current, body);
     }
@@ -546,7 +586,7 @@ byId("open-archive").addEventListener("click", () => {
   archiveDialog.showModal();
 });
 
-async function submitArchives(form, { contentType, body, date }) {
+async function submitArchives(form, { contentType, body, date, special = false }) {
   const fields = form.querySelector("fieldset");
   const button = form.querySelector("button[type='submit']");
   const message = form.querySelector(".form-message");
@@ -563,7 +603,8 @@ async function submitArchives(form, { contentType, body, date }) {
     form.reset();
     if (date) {
       archiveDate.value = date;
-      selectDate(date);
+      updateArchiveChannels(state.data?.channels ?? []);
+      selectDate(date, { special });
     }
     setMessage(message, `追加 ${added} 件、スキップ ${skipped} 件。`);
     await loadSchedule();
@@ -577,13 +618,17 @@ async function submitArchives(form, { contentType, body, date }) {
 
 archiveForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  const entry = Object.fromEntries(new FormData(archiveForm));
+  const { specialLive, ...entry } = Object.fromEntries(new FormData(archiveForm));
+  if (specialLive) entry.specialLive = true;
   submitArchives(archiveForm, {
     contentType: "application/json",
     body: JSON.stringify({ entries: [entry] }),
     date: entry.date,
+    special: entry.specialLive,
   });
 });
+
+archiveSpecial.addEventListener("change", () => updateArchiveChannels(state.data?.channels ?? []));
 
 archiveCsvForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -596,7 +641,7 @@ dateInput.addEventListener("change", () => selectDate(dateInput.value));
 for (const button of dateShortcuts) {
   button.addEventListener("click", () => {
     const now = new Date();
-    selectDate(relativeDate(button.dataset.dateOffset, now), now);
+    selectDate(relativeDate(button.dataset.dateOffset, now), { now });
   });
 }
 scheduleSearch.addEventListener("input", renderSchedule);

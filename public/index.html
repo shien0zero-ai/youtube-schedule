@@ -59,7 +59,7 @@
         <div id="schedule-alerts" class="schedule-alerts" aria-live="polite" hidden></div>
 
         <div class="schedule-controls">
-          <div class="tabs" role="tablist" aria-label="配信の状態">
+          <div class="tabs" role="tablist" aria-label="配信の種類">
             <button class="tab" type="button" id="tab-all" role="tab" aria-selected="true" aria-controls="schedule-panel" data-status="all">
               すべて<span class="tab-count" id="count-all">—</span>
             </button>
@@ -71,6 +71,9 @@
             </button>
             <button class="tab" type="button" id="tab-past" role="tab" aria-selected="false" aria-controls="schedule-panel" tabindex="-1" data-status="past">
               過去の配信<span class="tab-count" id="count-past">—</span>
+            </button>
+            <button class="tab" type="button" id="tab-special" role="tab" aria-selected="false" aria-controls="schedule-panel" tabindex="-1" data-status="special">
+              3Dライブ<span class="tab-count" id="count-special">—</span>
             </button>
           </div>
 
@@ -145,6 +148,7 @@
             <input id="archive-title" name="title" type="text">
             <label for="archive-url">公開アーカイブの URL</label>
             <input id="archive-url" name="url" type="url" placeholder="https://www.youtube.com/watch?v=…" required>
+            <label class="archive-special"><input id="archive-special" name="specialLive" type="checkbox">3Dライブとして登録</label>
             <button class="button primary" type="submit">配信を登録</button>
           </fieldset>
           <p id="archive-message" class="form-message" role="status" hidden></p>

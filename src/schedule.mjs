@@ -2,6 +2,8 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { prepareArchives } from './archives.mjs';
 import { ScheduleError } from './schedule-error.mjs';
+import { initialSpecialLives, specialLiveChannelIds } from './special-lives.mjs';
+import { isSpecialLive } from './special-lives-classification.mjs';
 
 const DAY = 24 * 60 * 60 * 1000;
 const REFRESH_INTERVAL = 2 * 60 * 1000;
@@ -63,8 +65,23 @@ function mergeStreams(existing, incoming, time) {
   return [...merged.values()];
 }
 
+function updateSpecialLives(saved, official, time) {
+  const listedIds = new Set(official.holoduleIds);
+  const savedIds = new Set(saved.map(({ id }) => id));
+  const incoming = (official.streams ?? []).filter((stream) =>
+    listedIds.has(stream.id) && specialLiveChannelIds.has(stream.channelId) &&
+    (savedIds.has(stream.id) || initialSpecialLives.has(stream.id) || isSpecialLive(stream)));
+  const incomingIds = new Set(incoming.map(({ id }) => id));
+  const existing = saved.map((stream) => stream.status === 'past' || incomingIds.has(stream.id) || stream.missingFromSource
+    ? stream : { ...stream, missingFromSource: true });
+  return mergeStreams(existing, incoming, time);
+}
+
 export function createScheduleService({ file, getHololive, getYouTubeChannel, normalizeChannelUrl, now = Date.now }) {
-  let state = { hidden: [], holoduleIds: [], ...readState(file) };
+  let state = { hidden: [], holoduleIds: [], specialLives: [], ...readState(file) };
+  if (!state.specialLives.length && state.holoduleIds.length) {
+    state.specialLives = updateSpecialLives([], state, now());
+  }
   let lastAttempt = null;
   let warnings = [];
   let refreshing;
@@ -135,7 +152,8 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     const hidden = new Set(state.hidden);
     const availableRoster = roster.filter(({ id }) =>
       presetIds.has(id) || retainedChannels.has(id) || hidden.has(id) || state.preferences[id] === true);
-    save({ ...state, roster: availableRoster, custom, streams, holoduleIds, updatedAt });
+    const specialLives = officialReady ? updateSpecialLives(state.specialLives, official, now()) : state.specialLives;
+    save({ ...state, roster: availableRoster, custom, streams, holoduleIds, updatedAt, specialLives });
     warnings = [
       ...(official === null ? ['ホロライブの配信情報を取得できませんでした。'] : officialWarnings),
       ...failures.filter(({ id }) => activeCustom.has(id))
@@ -161,6 +179,7 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
       ...channel,
       keepPast: state.preferences[channel.id] !== false,
       hidden: state.hidden.includes(channel.id),
+      specialLiveEligible: specialLiveChannelIds.has(channel.id),
     }));
   }
 
@@ -168,10 +187,18 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     const channels = availableChannels();
     const time = now();
     const streams = retainStreams(state.streams, channels.filter(({ hidden }) => !hidden), state.preferences, time, state.holoduleIds);
+    const specialLives = new Map(initialSpecialLives);
+    for (const stream of state.specialLives) {
+      specialLives.set(stream.id, { ...specialLives.get(stream.id), ...stream });
+    }
+    const hiddenIds = new Set(state.hidden);
 
     return {
       channels,
       streams: streams.map((stream) => displayStream(stream, time)).filter(Boolean),
+      specialLives: [...specialLives.values()]
+        .filter(({ channelId }) => specialLiveChannelIds.has(channelId) && !hiddenIds.has(channelId))
+        .map((stream) => displayStream(stream, time)).filter(Boolean),
       warnings,
       updatedAt: state.updatedAt ?? null,
     };
@@ -182,15 +209,22 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     const channels = availableChannels().filter(({ hidden }) => !hidden);
     const archives = prepareArchives(entries, channels, time);
     const streams = new Map(state.streams.map((stream) => [stream.id, stream]));
+    const specialLives = new Map(state.specialLives.map((stream) => [stream.id, stream]));
     let added = 0;
-    for (const archive of archives) {
-      const existing = streams.get(archive.id);
+    for (const [index, archive] of archives.entries()) {
+      const special = entries[index].specialLive === true;
+      if (special && (!specialLiveChannelIds.has(archive.channelId) || archive.platform !== 'youtube')) {
+        throw new ScheduleError(400, `${index + 1} 件目: 3Dライブにはホロライブのチャンネルと YouTube のアーカイブ URL を指定してください。`);
+      }
+      if (special && initialSpecialLives.has(archive.id)) continue;
+      const records = special ? specialLives : streams;
+      const existing = records.get(archive.id);
       if (existing && (existing.manualArchive || existing.channelId !== archive.channelId ||
         (existing.status !== 'past' && !existing.missingFromSource))) continue;
-      streams.set(archive.id, existing?.status === 'past' ? { ...existing, manualArchive: true } : archive);
+      records.set(archive.id, existing?.status === 'past' ? { ...existing, manualArchive: true } : archive);
       added++;
     }
-    if (added) save({ ...state, streams: [...streams.values()], updatedAt: new Date(time).toISOString() });
+    if (added) save({ ...state, streams: [...streams.values()], specialLives: [...specialLives.values()], updatedAt: new Date(time).toISOString() });
     return { added, skipped: archives.length - added };
   }
 

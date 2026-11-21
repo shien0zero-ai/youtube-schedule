@@ -181,7 +181,8 @@ async function enrichAvailable(records, fetchImpl, time, apiKey) {
   const candidates = records.filter(({ id, platform, status, startAt }) =>
     platform === 'youtube' && !(cache.get(id)?.expiresAt > time) &&
     (status !== 'past' || Date.parse(startAt) > time - day));
-  candidates.sort((left, right) => enrichmentPriority(left, time) - enrichmentPriority(right, time));
+  candidates.sort((left, right) => Number(cache.has(left.id)) - Number(cache.has(right.id)) ||
+    enrichmentPriority(left, time) - enrichmentPriority(right, time));
   const ids = candidates.slice(0, apiKey ? 50 : 12).map(({ id }) => id);
   if (ids.length) {
     const videos = await getYouTubeVideos(ids, { fetchImpl, apiKey }).catch(() => []);
@@ -206,6 +207,7 @@ async function enrichAvailable(records, fetchImpl, time, apiKey) {
       ...record,
       channelId: channel?.id ?? record.channelId,
       title: details.title,
+      ...(record.title !== details.title ? { holoduleTitle: record.title } : {}),
       thumbnail: details.thumbnail,
       status: actualStatus ?? record.status,
       startAt: actualStatus ? details.startAt ?? record.startAt : record.startAt,
@@ -246,7 +248,11 @@ export async function getHololive({ fetchImpl = fetch, now = Date.now, apiKey = 
 
   const streams = new Map((schedule?.streams ?? []).map((stream) => [stream.id, stream]));
   for (const stream of channel?.streams ?? []) {
-    streams.set(stream.id, { ...stream, channelId: streams.get(stream.id)?.channelId ?? officialChannel.id, platform: 'youtube' });
+    const listed = streams.get(stream.id);
+    streams.set(stream.id, {
+      ...stream, channelId: listed?.channelId ?? officialChannel.id, platform: 'youtube',
+      ...(listed ? { holoduleTitle: listed.holoduleTitle ?? listed.title } : {}),
+    });
   }
 
   const channels = [...roster, ...(schedule?.channels ?? [])];

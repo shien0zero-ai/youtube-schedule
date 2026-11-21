@@ -94,7 +94,7 @@ h1, h2, p { margin: 0; }
 .schedule-alerts ul > li + li { margin-top: 4px; }
 .schedule-controls { display: grid; gap: 15px; margin-bottom: 16px; }
 
-.tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding: 5px; border: 1px solid var(--border); border-radius: 13px; background: #eef2eb; }
+.tabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; padding: 5px; border: 1px solid var(--border); border-radius: 13px; background: #eef2eb; }
 .tab { min-width: 0; min-height: 43px; padding: 7px 5px; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 7px; color: #46534b; font-size: .9rem; font-weight: 700; background: transparent; border: 1px solid transparent; border-radius: 9px; }
 .tab:hover { color: var(--ink); background: #ffffff9e; }
 .tab[aria-selected="true"] { color: #174331; background: white; border-color: #d9e2d9; box-shadow: 0 1px 2px #253d2a0a; }
@@ -124,6 +124,9 @@ h1, h2, p { margin: 0; }
 .select-field select { width: auto; max-width: 100%; padding-right: 8px; }
 
 .schedule-panel { border-radius: var(--radius); }
+.special-archive-heading { margin: 0 0 17px; }
+.special-archive-heading h3 { margin: 0 0 4px; font-size: 1rem; }
+.special-archive-heading p { color: var(--muted); font-size: .82rem; line-height: 1.65; }
 .state-card { display: grid; place-items: center; align-content: center; gap: 12px; min-height: 250px; padding: 25px 20px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); text-align: center; }
 .state-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 13px; background: var(--mint); color: var(--green); font-size: 1.2rem; font-weight: 800; }
 .state-icon .radio-icon { position: relative; display: block; width: 20px; height: 20px; border: 2px solid #779985; border-top-color: transparent; border-bottom-color: transparent; border-radius: 50%; }
@@ -209,8 +212,10 @@ dialog::backdrop { background: #14282066; }
 .archive-forms h3 { margin: 0 0 10px; font-size: .96rem; }
 .archive-form fieldset { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 0; border: 0; }
 .archive-form label { font-size: .75rem; font-weight: 700; }
-.archive-form :is(input, select) { width: 100%; min-width: 0; min-height: 42px; padding: 8px 10px; background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 10px; font-size: .83rem; }
+.archive-form :is(input:not([type="checkbox"]), select) { width: 100%; min-width: 0; min-height: 42px; padding: 8px 10px; background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 10px; font-size: .83rem; }
 .archive-form input::file-selector-button { margin-inline-end: 7px; }
+.archive-special { display: flex; align-items: center; gap: 7px; min-height: 29px; cursor: pointer; }
+.archive-special input { width: 16px; height: 16px; margin: 0; accent-color: var(--green); }
 .archive-form button { margin-top: 3px; }
 .archive-hint { margin-bottom: 3px; color: var(--muted); font-size: .79rem; line-height: 1.65; overflow-wrap: anywhere; }
 .archive-form .form-message { margin-top: 8px; }
@@ -263,8 +268,9 @@ dialog::backdrop { background: #14282066; }
   .shell { width: calc(100% - 26px); }
   .hero { flex-direction: column; }
   .sidebar { grid-template-columns: minmax(0, 1fr); }
-  .tabs { gap: 2px; }
-  .tab { gap: 4px; min-height: 37px; font-size: .76rem; }
+  .tabs { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 2px; }
+  .tab { grid-column: span 2; gap: 4px; min-height: 41px; font-size: .76rem; }
+  .tab:nth-child(n + 4) { grid-column: span 3; }
   .filters { gap: 6px; }
   .search-field { padding-left: 10px; gap: 7px; }
   .search-field input, .select-field select { font-size: .75rem; }
