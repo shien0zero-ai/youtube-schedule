@@ -5,6 +5,12 @@
 // https://github.com/physicsdog0505/HoloViewer/blob/main/data/search/member_aliases.v1.json
 // Each row is a YouTube channel, with alternate names used by the official schedule.
 export const officialHololiveChannelId = 'UCJFZiqLMntJufDCHc6bQixg';
+export const hololiveGroupChannels = new Map([
+  ['UCotXwY6s8pWmuWd_snKYjhg', { channelName: 'hololive English', channelGroup: 'ホロライブ EN' }],
+  ['UCfrWoRGlawPQDQxxeIDRP0Q', { channelName: 'hololive Indonesia', channelGroup: 'ホロライブ ID' }],
+  ['UCu2n3qHuOuQIygREMnWeQWg', { channelName: 'FLOW GLOW', channelGroup: 'hololive DEV_IS' }],
+  ['UC10wVt6hoQiwySRhz7RdOUA', { channelName: 'ReGLOSS', channelGroup: 'hololive DEV_IS' }],
+]);
 
 export const rosterGroups = {
   "ホロライブ JP": [

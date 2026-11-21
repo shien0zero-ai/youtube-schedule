@@ -206,6 +206,7 @@ async function enrichAvailable(records, fetchImpl, time, apiKey) {
     return {
       ...record,
       channelId: channel?.id ?? record.channelId,
+      ...(details.channelId && details.channelId !== (channel?.id ?? record.channelId) ? { uploaderChannelId: details.channelId } : {}),
       title: details.title,
       ...(record.title !== details.title ? { holoduleTitle: record.title } : {}),
       thumbnail: details.thumbnail,
@@ -251,7 +252,7 @@ export async function getHololive({ fetchImpl = fetch, now = Date.now, apiKey = 
     const listed = streams.get(stream.id);
     streams.set(stream.id, {
       ...stream, channelId: listed?.channelId ?? officialChannel.id, platform: 'youtube',
-      ...(listed ? { holoduleTitle: listed.holoduleTitle ?? listed.title } : {}),
+      ...(listed ? { holoduleTitle: listed.holoduleTitle ?? listed.title, uploaderChannelId: officialChannel.id } : {}),
     });
   }
 

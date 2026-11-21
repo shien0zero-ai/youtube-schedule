@@ -75,6 +75,9 @@
             <button class="tab" type="button" id="tab-special" role="tab" aria-selected="false" aria-controls="schedule-panel" tabindex="-1" data-status="special">
               3Dライブ<span class="tab-count" id="count-special">—</span>
             </button>
+            <button class="tab" type="button" id="tab-mv" role="tab" aria-selected="false" aria-controls="schedule-panel" tabindex="-1" data-status="mv">
+              MV<span class="tab-count" id="count-mv">—</span>
+            </button>
           </div>
 
           <div class="filters">
@@ -83,6 +86,10 @@
               <span class="sr-only">配信タイトル・チャンネル名で検索</span>
               <input id="schedule-search" type="search" placeholder="タイトル・チャンネル名">
             </label>
+            <div class="mv-sort" id="mv-sort" role="group" aria-label="MVの並び順" hidden>
+              <button type="button" data-mv-order="newest" aria-pressed="true">新着順</button>
+              <button type="button" data-mv-order="views" aria-pressed="false">再生回数順</button>
+            </div>
             <label class="select-field">
               <span class="sr-only">所属グループ</span>
               <select id="schedule-group"><option value="">すべてのグループ</option></select>

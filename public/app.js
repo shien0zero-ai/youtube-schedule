@@ -4,6 +4,12 @@ const statusLabels = {
   past: "配信終了",
 };
 
+const mvStatusLabels = {
+  live: "プレミア公開中",
+  upcoming: "公開予定",
+  past: "公開済み",
+};
+
 const platformLabels = new Map([
   ["youtube", "YouTube"],
   ["youtube.com", "YouTube"],
@@ -27,7 +33,11 @@ const emptyStates = {
 
 const timeZone = "Asia/Tokyo";
 const dayMilliseconds = 24 * 60 * 60 * 1000;
-const specialPageSize = 40;
+const catalogPageSize = 40;
+const catalogTabs = {
+  special: { items: "specialLives", count: "specialLivesCount", label: "3Dライブ" },
+  mv: { items: "musicVideos", count: "musicVideosCount", label: "MV" },
+};
 const shortDay = new Intl.DateTimeFormat("ja-JP", { timeZone, month: "long", day: "numeric", weekday: "short" });
 const archiveDay = new Intl.DateTimeFormat("ja-JP", { timeZone, year: "numeric", month: "long", day: "numeric", weekday: "short" });
 const dateKey = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
@@ -40,6 +50,8 @@ const dateShortcuts = [...document.querySelectorAll("[data-date-offset]")];
 const schedulePanel = byId("schedule-panel");
 const scheduleSearch = byId("schedule-search");
 const scheduleGroup = byId("schedule-group");
+const mvSort = byId("mv-sort");
+const mvSortButtons = [...mvSort.querySelectorAll("[data-mv-order]")];
 const dialog = byId("settings-dialog");
 const rosterSearch = byId("roster-search");
 const rosterGroup = byId("roster-group");
@@ -59,8 +71,11 @@ const tabs = [...document.querySelectorAll(".tab")];
 const state = {
   status: "all",
   dateSelection: "today",
-  specialDateSelection: "",
-  specialLimit: specialPageSize,
+  catalogViews: {
+    special: { dateSelection: "", limit: catalogPageSize },
+    mv: { dateSelection: "", limit: catalogPageSize },
+  },
+  mvOrder: "newest",
   data: null,
   error: null,
   loading: true,
@@ -123,13 +138,13 @@ function jstDateKey(date) {
 }
 
 function streamDay(stream) {
-  const date = validDate(stream.startAt);
+  const date = validDate(stream.startAt ?? stream.publishedAt);
   return date ? jstDateKey(date) : stream.scheduleDate ?? "";
 }
 
-function sortSpecialLives(streams) {
+function newestFirst(streams) {
   const dated = streams.map((stream) => {
-    const start = validDate(stream.startAt);
+    const start = validDate(stream.startAt ?? stream.publishedAt);
     return { stream, day: start ? jstDateKey(start) : stream.scheduleDate ?? "", time: start?.getTime() ?? Number.MIN_SAFE_INTEGER };
   });
   dated.sort((left, right) => right.day.localeCompare(left.day) || right.time - left.time);
@@ -157,15 +172,16 @@ function updateDateControls(selected, now) {
   }
 }
 
-function selectDate(date, { now = new Date(), special = state.status === "special" } = {}) {
+function selectDate(date, { now = new Date(), status = state.status } = {}) {
   const selection = date === jstDateKey(now) ? "today" : date;
-  if (special) {
-    state.specialDateSelection = selection;
-    state.specialLimit = specialPageSize;
+  const catalog = state.catalogViews[status];
+  if (catalog) {
+    catalog.dateSelection = selection;
+    catalog.limit = catalogPageSize;
   } else {
     state.dateSelection = selection;
   }
-  return selectTab(byId(special ? "tab-special" : "tab-all"));
+  return selectTab(byId(catalog ? "tab-" + status : "tab-all"));
 }
 
 async function request(path, options) {
@@ -218,20 +234,23 @@ function updateArchiveChannels(channels) {
 
 async function loadSchedule({ refresh = false } = {}) {
   const version = ++state.loadVersion;
-  const special = state.status === "special";
+  const mode = catalogTabs[state.status] ? state.status : "schedule";
   const params = new URLSearchParams();
-  if (!special) params.set("special", "0");
+  if (mode !== "special") params.set("special", "0");
+  if (mode === "mv") params.set("mv", "1");
   if (refresh) params.set("refresh", "1");
   const query = params.toString();
   state.loading = true;
-  state.loadMode = special ? "special" : "schedule";
+  state.loadMode = mode;
   refreshButton.disabled = true;
   refreshButton.setAttribute("aria-busy", "true");
   renderSchedule();
   try {
     const data = await request(query ? "/api/schedule?" + query : "/api/schedule", { cache: "no-store" });
     if (version !== state.loadVersion) return;
-    if (Array.isArray(data.specialLives)) data.specialLives = sortSpecialLives(data.specialLives);
+    for (const { items } of Object.values(catalogTabs)) {
+      if (Array.isArray(data[items])) data[items] = newestFirst(data[items]);
+    }
     state.data = data;
     state.error = null;
     updateChannelControls(data.channels);
@@ -252,8 +271,11 @@ async function loadSchedule({ refresh = false } = {}) {
 
 function renderAlerts() {
   const node = byId("schedule-alerts");
-  const warnings = [...new Set(state.data?.warnings ?? [])].filter(Boolean);
-  const hasContent = state.data && (state.status !== "special" || Array.isArray(state.data.specialLives));
+  const messages = [...(state.data?.warnings ?? [])];
+  if (state.status === "mv") messages.push(state.data?.musicVideosWarning);
+  const warnings = [...new Set(messages)].filter(Boolean);
+  const catalog = catalogTabs[state.status];
+  const hasContent = state.data && (!catalog || Array.isArray(state.data[catalog.items]));
   if (state.error && hasContent) warnings.unshift("更新に失敗したため、直前に取得した情報を表示しています。");
   node.hidden = warnings.length === 0;
   node.replaceChildren();
@@ -299,7 +321,7 @@ function media(container, source, fallbackText) {
   container.append(image);
 }
 
-function renderStream(stream, channel) {
+function renderStream(stream, channel, { mv = false, showDay = false } = {}) {
   const streamUrl = webUrl(stream.url);
   const card = element(streamUrl ? "a" : "article", "stream");
   if (streamUrl) {
@@ -314,19 +336,27 @@ function renderStream(stream, channel) {
 
   const body = element("div", "stream-body");
   const meta = element("div", "stream-meta");
-  const unconfirmed = stream.status === "past" && stream.archiveUnconfirmed === true;
-  const badge = element("span", "status-badge", unconfirmed ? "アーカイブ未確認" : statusLabels[stream.status]);
+  const unconfirmed = stream.archiveUnconfirmed === true && (mv || stream.status === "past");
+  const labels = mv ? mvStatusLabels : statusLabels;
+  const unconfirmedLabel = mv ? "公開未確認" : "アーカイブ未確認";
+  const badge = element("span", "status-badge", unconfirmed ? unconfirmedLabel : labels[stream.status]);
   badge.dataset.status = stream.status;
   if (unconfirmed) badge.dataset.archiveUnconfirmed = "true";
   meta.append(badge);
-  const streamDate = validDate(stream.startAt);
+  const streamDate = validDate(stream.startAt ?? stream.publishedAt);
   if (streamDate) {
-    const time = element("time", "", clock.format(streamDate));
+    const clockLabel = clock.format(streamDate);
+    const time = element("time", "", showDay ? `${archiveDay.format(streamDate)} ${clockLabel}` : clockLabel);
     time.dateTime = streamDate.toISOString();
     meta.append(time);
+  } else if (showDay && stream.scheduleDate) {
+    meta.append(element("span", "", dayLabel(stream.scheduleDate, archiveDay)));
   }
   const platform = streamPlatform(stream.platform, streamUrl);
   if (platform) meta.append(element("span", "stream-platform", platform));
+  if (mv && Number.isFinite(stream.viewCount)) {
+    meta.append(element("span", "stream-views", `${stream.viewCount.toLocaleString("ja-JP")} 回再生`));
+  }
   body.append(meta, element("h4", "stream-title", stream.title || "タイトル未定"));
   const channelName = channel?.name ?? stream.channelName;
   if (channelName) body.append(element("p", "stream-channel", channelName));
@@ -339,7 +369,13 @@ function renderStream(stream, channel) {
   return card;
 }
 
-function renderStreams(streams, channels, descending, dateFormat = shortDay) {
+function renderStreamList(streams, channels, options) {
+  const list = element("div", "stream-list");
+  list.append(...streams.map((stream) => renderStream(stream, channels.get(stream.channelId), options)));
+  return list;
+}
+
+function renderStreams(streams, channels, { descending, dateFormat = shortDay, mv = false }) {
   const groups = new Map();
   for (const stream of streams) {
     const day = streamDay(stream);
@@ -352,25 +388,24 @@ function renderStreams(streams, channels, descending, dateFormat = shortDay) {
   if (groups.has("")) days.push("");
   return days.map((day) => {
     const section = element("section", "stream-group");
-    const list = element("div", "stream-list");
-    list.append(...groups.get(day).map((stream) => renderStream(stream, channels.get(stream.channelId))));
+    const list = renderStreamList(groups.get(day), channels, { mv });
     section.append(element("h3", "stream-day", day ? dayLabel(day, dateFormat) : "日時未定"), list);
     return section;
   });
 }
 
 function renderAfterFilterChange() {
-  state.specialLimit = specialPageSize;
+  for (const catalog of Object.values(state.catalogViews)) catalog.limit = catalogPageSize;
   renderSchedule();
 }
 
-function renderMoreSpecialLives() {
+function renderMore(catalog) {
   const control = element("div", "schedule-more");
   const button = element("button", "button secondary", "さらに表示");
   button.type = "button";
   button.addEventListener("click", () => {
-    const previousLimit = state.specialLimit;
-    state.specialLimit += specialPageSize;
+    const previousLimit = catalog.limit;
+    catalog.limit += catalogPageSize;
     renderSchedule();
     const firstNew = schedulePanel.querySelectorAll(".stream")[previousLimit];
     if (firstNew) {
@@ -385,9 +420,13 @@ function renderMoreSpecialLives() {
 function renderSchedule() {
   const { data, loading, error, status } = state;
   const now = new Date();
-  const special = status === "special";
+  const catalog = catalogTabs[status];
+  const catalogView = state.catalogViews[status];
+  const mv = status === "mv";
+  const byViews = mv && state.mvOrder === "views";
   const scheduleDate = selectedDate(state.dateSelection, now);
-  const date = special ? selectedDate(state.specialDateSelection, now) : scheduleDate;
+  const date = catalogView ? selectedDate(catalogView.dateSelection, now) : scheduleDate;
+  mvSort.hidden = !mv;
   updateDateControls(date, now);
   const updated = validDate(data?.updatedAt);
   byId("sync-status").textContent = loading
@@ -397,10 +436,11 @@ function renderSchedule() {
   renderAlerts();
 
   if (!data) {
+    const subject = catalog?.label ?? "配信情報";
     if (loading) {
-      schedulePanel.replaceChildren(stateCard(special ? "3Dライブを取得しています" : "配信情報を取得しています", "", { loading: true }));
+      schedulePanel.replaceChildren(stateCard(`${subject}を取得しています`, "", { loading: true }));
     } else {
-      schedulePanel.replaceChildren(stateCard(special ? "3Dライブを取得できませんでした" : "配信情報を取得できませんでした", error, {
+      schedulePanel.replaceChildren(stateCard(`${subject}を取得できませんでした`, error, {
         action: () => loadSchedule({ refresh: true }),
         actionLabel: "もう一度試す",
       }));
@@ -420,43 +460,54 @@ function renderSchedule() {
       (!channel && searchValue(stream.channelName).includes(query));
   };
   const matches = data.streams.filter((stream) => (!scheduleDate || streamDay(stream) === scheduleDate) && matchesFilters(stream));
-  const matchingSpecialLives = special ? data.specialLives?.filter((stream) => (!date || streamDay(stream) === date) && matchesFilters(stream)) : null;
+  const matchingCatalog = catalog ? data[catalog.items]?.filter((stream) => (!date || streamDay(stream) === date) && matchesFilters(stream)) : null;
 
   byId("count-all").textContent = matches.length;
   for (const key of Object.keys(statusLabels)) {
     byId("count-" + key).textContent = matches.filter((stream) => stream.status === key).length;
   }
-  byId("count-special").textContent = matchingSpecialLives?.length ?? data.specialLivesCount ?? data.specialLives?.length ?? "—";
+  for (const [key, { items, count }] of Object.entries(catalogTabs)) {
+    const shownCount = status === key ? matchingCatalog?.length : null;
+    byId("count-" + key).textContent = shownCount ?? data[count] ?? data[items]?.length ?? "—";
+  }
 
-  const visible = special ? matchingSpecialLives : status === "all" ? matches : matches.filter((stream) => stream.status === status);
-  const descending = special || status === "past";
-  if (!special) {
+  const visible = catalog ? matchingCatalog : status === "all" ? matches : matches.filter((stream) => stream.status === status);
+  const descending = Boolean(catalog) || status === "past";
+  if (!catalog) {
     visible.sort((left, right) => {
       const leftDate = validDate(left.startAt);
       const rightDate = validDate(right.startAt);
       if (!leftDate || !rightDate) return Number(!leftDate) - Number(!rightDate);
       return descending ? rightDate - leftDate : leftDate - rightDate;
     });
+  } else if (byViews && visible) {
+    visible.sort((left, right) => (right.viewCount ?? -1) - (left.viewCount ?? -1));
   }
 
   const content = [];
-  if (special) {
-    const heading = element("div", "special-archive-heading");
+  if (status === "special") {
+    const heading = element("div", "catalog-heading");
     heading.append(
       element("h3", "", "3Dライブの予定とアーカイブ"),
       element("p", "", "ホロジュールの配信予定と、ホロライブ公式チャンネル・メンバーの公開アーカイブを掲載します。"),
     );
     content.push(heading);
+  } else if (mv) {
+    content.push(element("h3", "catalog-heading", "ミュージックビデオ"));
   }
 
   if (!visible) {
     content.push(loading
-      ? stateCard("3Dライブを取得しています", "", { loading: true })
-      : stateCard("3Dライブを取得できませんでした", error, { action: () => loadSchedule(), actionLabel: "もう一度試す" }));
+      ? stateCard(`${catalog.label}を取得しています`, "", { loading: true })
+      : stateCard(`${catalog.label}を取得できませんでした`, error, { action: () => loadSchedule(), actionLabel: "もう一度試す" }));
   } else if (visible.length) {
-    const shown = special ? visible.slice(0, state.specialLimit) : visible;
-    content.push(...renderStreams(shown, channels, descending, special ? archiveDay : shortDay));
-    if (shown.length < visible.length) content.push(renderMoreSpecialLives());
+    const shown = catalogView ? visible.slice(0, catalogView.limit) : visible;
+    if (byViews) {
+      content.push(renderStreamList(shown, channels, { mv, showDay: true }));
+    } else {
+      content.push(...renderStreams(shown, channels, { descending, dateFormat: catalog ? archiveDay : shortDay, mv }));
+    }
+    if (shown.length < visible.length) content.push(renderMore(catalogView));
   } else if (groups || query) {
     content.push(stateCard("条件に一致する配信はありません", "", {
       action: () => {
@@ -467,13 +518,13 @@ function renderSchedule() {
       },
       actionLabel: "絞り込みを解除",
     }));
-  } else if (special && date) {
-    content.push(stateCard(`${dayLabel(date, archiveDay)}の3Dライブはありません`, "", {
+  } else if (catalog && date) {
+    content.push(stateCard(`${dayLabel(date, archiveDay)}の${catalog.label}はありません`, "", {
       action: () => selectDate(""),
       actionLabel: "全日程を表示",
     }));
-  } else if (special) {
-    content.push(stateCard("表示できる3Dライブはありません", ""));
+  } else if (catalog) {
+    content.push(stateCard(`表示できる${catalog.label}はありません`, ""));
   } else if (data.warnings?.length || error) {
     content.push(stateCard("この区分の配信情報はありません", "取得できた範囲の情報を表示しています。"));
   } else if (date && status === "all") {
@@ -491,7 +542,8 @@ function selectTab(tab) {
     candidate.tabIndex = candidate === tab ? 0 : -1;
   }
   schedulePanel.setAttribute("aria-labelledby", tab.id);
-  if (state.status === "special" && state.loadMode !== "special" && (state.loadMode === "schedule" || !Array.isArray(state.data?.specialLives))) {
+  const catalog = catalogTabs[state.status];
+  if (catalog && state.loadMode !== state.status && (state.loadMode || !Array.isArray(state.data?.[catalog.items]))) {
     return loadSchedule();
   }
   renderSchedule();
@@ -599,9 +651,11 @@ async function mutateChannel(channel, method, body, success, focusTarget) {
         current.hidden = true;
       }
       state.data.streams = state.data.streams.filter(({ channelId }) => channelId !== channel.id);
-      if (state.data.specialLives) {
-        state.data.specialLives = state.data.specialLives.filter(({ channelId }) => channelId !== channel.id);
-        state.data.specialLivesCount = state.data.specialLives.length;
+      for (const { items, count } of Object.values(catalogTabs)) {
+        if (Array.isArray(state.data[items])) {
+          state.data[items] = state.data[items].filter(({ channelId }) => channelId !== channel.id);
+          state.data[count] = state.data[items].length;
+        }
       }
     } else if (current) {
       Object.assign(current, body);
@@ -671,7 +725,7 @@ async function submitArchives(form, { contentType, body, date, special = false }
     if (date) {
       archiveDate.value = date;
       updateArchiveChannels(state.data?.channels ?? []);
-      reload = selectDate(date, { special });
+      reload = selectDate(date, { status: special ? "special" : "all" });
     }
     setMessage(message, `追加 ${added} 件、スキップ ${skipped} 件。`);
     await (reload ?? loadSchedule());
@@ -713,6 +767,16 @@ for (const button of dateShortcuts) {
 }
 scheduleSearch.addEventListener("input", renderAfterFilterChange);
 scheduleGroup.addEventListener("change", renderAfterFilterChange);
+for (const button of mvSortButtons) {
+  button.addEventListener("click", () => {
+    const order = button.dataset.mvOrder;
+    if (state.mvOrder === order) return;
+    state.mvOrder = order;
+    state.catalogViews.mv.limit = catalogPageSize;
+    for (const candidate of mvSortButtons) candidate.setAttribute("aria-pressed", String(candidate === button));
+    renderSchedule();
+  });
+}
 rosterSearch.addEventListener("input", () => renderRoster());
 rosterGroup.addEventListener("change", () => renderRoster());
 retainedFilter.addEventListener("change", () => renderRoster());

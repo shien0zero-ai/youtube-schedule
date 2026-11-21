@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { prepareArchives } from './archives.mjs';
 import { rosterGroups } from './data/hololive-roster.mjs';
+import { createMusicVideoCatalog } from './music-videos.mjs';
 import { ScheduleError } from './schedule-error.mjs';
 import { initialSpecialLives, specialLiveChannelIds } from './special-lives.mjs';
 import { isSpecialLive } from './special-lives-classification.mjs';
@@ -79,7 +80,8 @@ function updateSpecialLives(saved, official, time) {
   return mergeStreams(existing, incoming, time);
 }
 
-export function createScheduleService({ file, getHololive, getYouTubeChannel, normalizeChannelUrl, now = Date.now }) {
+export function createScheduleService({ file, getHololive, getYouTubeChannel, normalizeChannelUrl, getMusicVideos, getRecentMusicVideos, now = Date.now }) {
+  const music = createMusicVideoCatalog({ scheduleFile: file, now, getMusicVideos, getRecentMusicVideos });
   let state = { hidden: [], holoduleIds: [], specialLives: [], ...readState(file) };
   if (!state.specialLives.length && state.holoduleIds.length) {
     state.specialLives = updateSpecialLives([], state, now());
@@ -156,6 +158,7 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
       presetIds.has(id) || retainedChannels.has(id) || hidden.has(id) || state.preferences[id] === true);
     const specialLives = officialReady ? updateSpecialLives(state.specialLives, official, now()) : state.specialLives;
     save({ ...state, roster: availableRoster, custom, streams, holoduleIds, updatedAt, specialLives });
+    if (officialReady) music.observeHolodule(official);
     warnings = [
       ...(official === null ? ['ホロライブの配信情報を取得できませんでした。'] : officialWarnings),
       ...failures.filter(({ id }) => activeCustom.has(id))
@@ -186,7 +189,7 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     }));
   }
 
-  function snapshot({ includeSpecialLives = true } = {}) {
+  function snapshot({ includeSpecialLives = true, includeMusicVideos = false } = {}) {
     const channels = availableChannels();
     const time = now();
     const streams = retainStreams(state.streams, channels.filter(({ hidden }) => !hidden), state.preferences, time, state.holoduleIds);
@@ -210,6 +213,7 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
       streams: streams.map((stream) => displayStream(stream, time)).filter(Boolean),
       specialLivesCount,
       ...(visibleSpecialLives ? { specialLives: visibleSpecialLives } : {}),
+      ...music.snapshot(hiddenIds, includeMusicVideos),
       warnings,
       updatedAt: state.updatedAt ?? null,
     };
@@ -304,7 +308,7 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     save({ ...state, hidden: state.hidden.filter((hiddenId) => hiddenId !== id) });
   }
 
-  return { refresh, snapshot, addArchives, addChannel, setKeepPast, removeChannel, restoreChannel };
+  return { refresh, refreshMusicVideos: music.refresh, snapshot, addArchives, addChannel, setKeepPast, removeChannel, restoreChannel };
 }
 
 export { REFRESH_INTERVAL, ScheduleError };

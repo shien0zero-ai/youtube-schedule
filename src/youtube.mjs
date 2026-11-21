@@ -289,7 +289,7 @@ async function readPublicStream({ id, title, scheduledStartAt }, options) {
   return stream(id, videoTitle, status, startAt, null, channelId);
 }
 
-async function youtubeApi(endpoint, params, options, apiKey) {
+export async function youtubeApi(endpoint, params, options, apiKey) {
   const address = new URL(`https://www.googleapis.com/youtube/v3/${endpoint}`);
   address.search = new URLSearchParams(params).toString();
   const response = await request(address, options, { 'X-Goog-Api-Key': apiKey });

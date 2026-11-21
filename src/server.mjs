@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArchiveCsv } from './archives.mjs';
 import { getHololive } from './hololive.mjs';
+import { getMusicVideos, getRecentMusicVideos } from './music-video-youtube.mjs';
 import { getYouTubeChannel, normalizeChannelUrl } from './youtube.mjs';
 import { createScheduleService, REFRESH_INTERVAL } from './schedule.mjs';
 import { ScheduleError } from './schedule-error.mjs';
@@ -74,16 +75,22 @@ async function serveAsset(request, response, pathname) {
 
 export function createApp({
   file = defaultDataFile,
-  providers = { getHololive, getYouTubeChannel, normalizeChannelUrl },
+  providers = { getHololive, getYouTubeChannel, normalizeChannelUrl, getRecentMusicVideos,
+    getMusicVideos: process.env.YOUTUBE_API_KEY ? getMusicVideos : undefined },
   now,
 } = {}) {
   const schedule = createScheduleService({ file, ...providers, now });
+  function refreshMusicVideos() {
+    schedule.refreshMusicVideos().catch((error) => console.error('MV refresh failed:', error.message));
+  }
   const server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url, 'http://localhost');
       if (request.method === 'GET' && url.pathname === '/api/schedule') {
+        const includeMusicVideos = url.searchParams.get('mv') === '1';
         await schedule.refresh(url.searchParams.get('refresh') === '1');
-        return json(response, 200, schedule.snapshot({ includeSpecialLives: url.searchParams.get('special') !== '0' }));
+        if (includeMusicVideos) refreshMusicVideos();
+        return json(response, 200, schedule.snapshot({ includeSpecialLives: url.searchParams.get('special') !== '0', includeMusicVideos }));
       }
 
       if (request.method === 'POST' && url.pathname === '/api/channels') {
@@ -119,7 +126,7 @@ export function createApp({
     }
   });
 
-  return { server, schedule };
+  return { server, schedule, refreshMusicVideos };
 }
 
 function openBrowser(url) {
@@ -145,9 +152,10 @@ function startServer() {
     process.exitCode = 1;
     return;
   }
-  const { server, schedule } = createApp({ file: process.env.SCHEDULE_DATA_FILE || defaultDataFile });
+  const { server, schedule, refreshMusicVideos } = createApp({ file: process.env.SCHEDULE_DATA_FILE || defaultDataFile });
   function refresh() {
     schedule.refresh().catch((error) => console.error('Schedule refresh failed:', error));
+    refreshMusicVideos();
   }
   server.on('error', (error) => {
     if (error.code === 'EADDRINUSE') {
