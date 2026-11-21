@@ -121,6 +121,23 @@ test('schedule keeps cached data and displays warnings during an upstream failur
   assert.equal(cached.updatedAt, initial.updatedAt);
 });
 
+test('includes Japanese search aliases for existing EN and ID channels without a source refresh', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'youtube-schedule-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'schedule.json');
+  await writeFile(file, JSON.stringify({
+    roster: [
+      { id: 'UCHsx4Hqa-1ORjQTh9TYDhww', name: 'Takanashi Kiara', group: 'ホロライブ EN' },
+      { id: 'UCP0BspO_AMEe3aQqqpo89Dg', name: 'Moona Hoshinova', group: 'ホロライブ ID' },
+    ],
+    custom: [], preferences: {}, streams: [],
+  }));
+  const request = await startApp(t, { file, providers: { getHololive: async () => null } });
+  const { channels } = await (await request('/api/schedule?special=0')).json();
+  assert.ok(channels[0].aliases.includes('タカナシキアラ'));
+  assert.ok(channels[1].aliases.includes('ムーナ・ホシノヴァ'));
+});
+
 test('shows listed older Hololive cards and preserves a saved opt-out after listings change', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'youtube-schedule-'));
   t.after(() => rm(dir, { recursive: true, force: true }));

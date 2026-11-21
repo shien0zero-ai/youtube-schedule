@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { prepareArchives } from './archives.mjs';
+import { rosterGroups } from './data/hololive-roster.mjs';
 import { ScheduleError } from './schedule-error.mjs';
 import { initialSpecialLives, specialLiveChannelIds } from './special-lives.mjs';
 import { isSpecialLive } from './special-lives-classification.mjs';
@@ -8,6 +9,7 @@ import { isSpecialLive } from './special-lives-classification.mjs';
 const DAY = 24 * 60 * 60 * 1000;
 const REFRESH_INTERVAL = 2 * 60 * 1000;
 const FORCED_REFRESH_INTERVAL = 15 * 1000;
+const aliasesByChannel = new Map(Object.values(rosterGroups).flat().map(([id, , aliases]) => [id, aliases]));
 
 function readState(path) {
   try {
@@ -180,6 +182,7 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
       keepPast: state.preferences[channel.id] !== false,
       hidden: state.hidden.includes(channel.id),
       specialLiveEligible: specialLiveChannelIds.has(channel.id),
+      aliases: aliasesByChannel.get(channel.id),
     }));
   }
 

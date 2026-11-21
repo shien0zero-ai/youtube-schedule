@@ -102,7 +102,13 @@ function streamPlatform(platform, url) {
 }
 
 function searchValue(value) {
-  return String(value ?? "").normalize("NFKC").toLocaleLowerCase("ja-JP").trim();
+  return String(value ?? "").normalize("NFKC").toLocaleLowerCase("ja-JP")
+    .replace(/[\u30a1-\u30f6\u30fd-\u30fe]/g, (kana) => String.fromCharCode(kana.charCodeAt(0) - 0x60))
+    .replace(/[\s・'’]+/g, "");
+}
+
+function matchesChannelName(channel, query) {
+  return [channel.name, ...(channel.aliases ?? [])].some((name) => searchValue(name).includes(query));
 }
 
 function setMessage(node, value = "", kind = "success") {
@@ -405,11 +411,13 @@ function renderSchedule() {
   const groups = scheduleGroup.value;
   const query = searchValue(scheduleSearch.value);
   const channels = new Map(data.channels.map((channel) => [channel.id, channel]));
+  const matchingChannels = query ? new Set(data.channels.filter((channel) => matchesChannelName(channel, query)).map(({ id }) => id)) : null;
   const matchesFilters = (stream) => {
     const channel = channels.get(stream.channelId);
     if (channel?.hidden) return false;
     if (groups && groups !== (channel?.group ?? stream.channelGroup)) return false;
-    return !query || searchValue(stream.title).includes(query) || searchValue(channel?.name ?? stream.channelName).includes(query);
+    return !query || matchingChannels.has(stream.channelId) || searchValue(stream.title).includes(query) ||
+      (!channel && searchValue(stream.channelName).includes(query));
   };
   const matches = data.streams.filter((stream) => (!scheduleDate || streamDay(stream) === scheduleDate) && matchesFilters(stream));
   const matchingSpecialLives = special ? data.specialLives?.filter((stream) => (!date || streamDay(stream) === date) && matchesFilters(stream)) : null;
@@ -553,7 +561,7 @@ function renderRoster(focusAfter) {
     if (group && channel.group !== group) return false;
     if (retainedFilter.checked && !channel.keepPast) return false;
     if (hiddenFilter.checked && !channel.hidden) return false;
-    return !query || searchValue(channel.name).includes(query);
+    return !query || matchesChannelName(channel, query);
   });
   list.replaceChildren();
   if (channels.length) {
