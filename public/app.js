@@ -27,6 +27,7 @@ const emptyStates = {
 
 const timeZone = "Asia/Tokyo";
 const dayMilliseconds = 24 * 60 * 60 * 1000;
+const specialPageSize = 40;
 const shortDay = new Intl.DateTimeFormat("ja-JP", { timeZone, month: "long", day: "numeric", weekday: "short" });
 const archiveDay = new Intl.DateTimeFormat("ja-JP", { timeZone, year: "numeric", month: "long", day: "numeric", weekday: "short" });
 const dateKey = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
@@ -59,9 +60,11 @@ const state = {
   status: "all",
   dateSelection: "today",
   specialDateSelection: "",
+  specialLimit: specialPageSize,
   data: null,
   error: null,
   loading: true,
+  loadMode: null,
   loadVersion: 0,
   pendingChannels: new Set(),
 };
@@ -118,6 +121,15 @@ function streamDay(stream) {
   return date ? jstDateKey(date) : stream.scheduleDate ?? "";
 }
 
+function sortSpecialLives(streams) {
+  const dated = streams.map((stream) => {
+    const start = validDate(stream.startAt);
+    return { stream, day: start ? jstDateKey(start) : stream.scheduleDate ?? "", time: start?.getTime() ?? Number.MIN_SAFE_INTEGER };
+  });
+  dated.sort((left, right) => right.day.localeCompare(left.day) || right.time - left.time);
+  return dated.map(({ stream }) => stream);
+}
+
 function dayLabel(day, formatter = shortDay) {
   const date = validDate(`${day}T00:00:00+09:00`);
   return date ? formatter.format(date) : day;
@@ -141,9 +153,13 @@ function updateDateControls(selected, now) {
 
 function selectDate(date, { now = new Date(), special = state.status === "special" } = {}) {
   const selection = date === jstDateKey(now) ? "today" : date;
-  if (special) state.specialDateSelection = selection;
-  else state.dateSelection = selection;
-  selectTab(byId(special ? "tab-special" : "tab-all"));
+  if (special) {
+    state.specialDateSelection = selection;
+    state.specialLimit = specialPageSize;
+  } else {
+    state.dateSelection = selection;
+  }
+  return selectTab(byId(special ? "tab-special" : "tab-all"));
 }
 
 async function request(path, options) {
@@ -196,13 +212,20 @@ function updateArchiveChannels(channels) {
 
 async function loadSchedule({ refresh = false } = {}) {
   const version = ++state.loadVersion;
+  const special = state.status === "special";
+  const params = new URLSearchParams();
+  if (!special) params.set("special", "0");
+  if (refresh) params.set("refresh", "1");
+  const query = params.toString();
   state.loading = true;
+  state.loadMode = special ? "special" : "schedule";
   refreshButton.disabled = true;
   refreshButton.setAttribute("aria-busy", "true");
   renderSchedule();
   try {
-    const data = await request(refresh ? "/api/schedule?refresh=1" : "/api/schedule", { cache: "no-store" });
+    const data = await request(query ? "/api/schedule?" + query : "/api/schedule", { cache: "no-store" });
     if (version !== state.loadVersion) return;
+    if (Array.isArray(data.specialLives)) data.specialLives = sortSpecialLives(data.specialLives);
     state.data = data;
     state.error = null;
     updateChannelControls(data.channels);
@@ -212,6 +235,7 @@ async function loadSchedule({ refresh = false } = {}) {
   } finally {
     if (version === state.loadVersion) {
       state.loading = false;
+      state.loadMode = null;
       refreshButton.disabled = false;
       refreshButton.removeAttribute("aria-busy");
       renderSchedule();
@@ -223,7 +247,8 @@ async function loadSchedule({ refresh = false } = {}) {
 function renderAlerts() {
   const node = byId("schedule-alerts");
   const warnings = [...new Set(state.data?.warnings ?? [])].filter(Boolean);
-  if (state.error && state.data) warnings.unshift("更新に失敗したため、直前に取得した情報を表示しています。");
+  const hasContent = state.data && (state.status !== "special" || Array.isArray(state.data.specialLives));
+  if (state.error && hasContent) warnings.unshift("更新に失敗したため、直前に取得した情報を表示しています。");
   node.hidden = warnings.length === 0;
   node.replaceChildren();
   if (warnings.length === 1) {
@@ -297,7 +322,8 @@ function renderStream(stream, channel) {
   const platform = streamPlatform(stream.platform, streamUrl);
   if (platform) meta.append(element("span", "stream-platform", platform));
   body.append(meta, element("h4", "stream-title", stream.title || "タイトル未定"));
-  if (channel?.name) body.append(element("p", "stream-channel", channel.name));
+  const channelName = channel?.name ?? stream.channelName;
+  if (channelName) body.append(element("p", "stream-channel", channelName));
   card.append(preview, body);
   if (streamUrl) {
     const arrow = element("span", "stream-arrow", "↗");
@@ -327,6 +353,29 @@ function renderStreams(streams, channels, descending, dateFormat = shortDay) {
   });
 }
 
+function renderAfterFilterChange() {
+  state.specialLimit = specialPageSize;
+  renderSchedule();
+}
+
+function renderMoreSpecialLives() {
+  const control = element("div", "schedule-more");
+  const button = element("button", "button secondary", "さらに表示");
+  button.type = "button";
+  button.addEventListener("click", () => {
+    const previousLimit = state.specialLimit;
+    state.specialLimit += specialPageSize;
+    renderSchedule();
+    const firstNew = schedulePanel.querySelectorAll(".stream")[previousLimit];
+    if (firstNew) {
+      if (firstNew.tagName !== "A") firstNew.tabIndex = -1;
+      firstNew.focus();
+    }
+  });
+  control.append(button);
+  return control;
+}
+
 function renderSchedule() {
   const { data, loading, error, status } = state;
   const now = new Date();
@@ -343,9 +392,9 @@ function renderSchedule() {
 
   if (!data) {
     if (loading) {
-      schedulePanel.replaceChildren(stateCard("配信情報を取得しています", "", { loading: true }));
+      schedulePanel.replaceChildren(stateCard(special ? "3Dライブを取得しています" : "配信情報を取得しています", "", { loading: true }));
     } else {
-      schedulePanel.replaceChildren(stateCard("配信情報を取得できませんでした", error, {
+      schedulePanel.replaceChildren(stateCard(special ? "3Dライブを取得できませんでした" : "配信情報を取得できませんでした", error, {
         action: () => loadSchedule({ refresh: true }),
         actionLabel: "もう一度試す",
       }));
@@ -359,29 +408,28 @@ function renderSchedule() {
   const matchesFilters = (stream) => {
     const channel = channels.get(stream.channelId);
     if (channel?.hidden) return false;
-    if (groups && groups !== channel?.group) return false;
-    return !query || searchValue(stream.title).includes(query) || searchValue(channel?.name).includes(query);
+    if (groups && groups !== (channel?.group ?? stream.channelGroup)) return false;
+    return !query || searchValue(stream.title).includes(query) || searchValue(channel?.name ?? stream.channelName).includes(query);
   };
   const matches = data.streams.filter((stream) => (!scheduleDate || streamDay(stream) === scheduleDate) && matchesFilters(stream));
-  const specialLives = (data.specialLives ?? []).filter(({ channelId }) => !channels.get(channelId)?.hidden);
-  const matchingSpecialLives = special
-    ? specialLives.filter((stream) => (!date || streamDay(stream) === date) && matchesFilters(stream))
-    : specialLives;
+  const matchingSpecialLives = special ? data.specialLives?.filter((stream) => (!date || streamDay(stream) === date) && matchesFilters(stream)) : null;
 
   byId("count-all").textContent = matches.length;
   for (const key of Object.keys(statusLabels)) {
     byId("count-" + key).textContent = matches.filter((stream) => stream.status === key).length;
   }
-  byId("count-special").textContent = matchingSpecialLives.length;
+  byId("count-special").textContent = matchingSpecialLives?.length ?? data.specialLivesCount ?? data.specialLives?.length ?? "—";
 
   const visible = special ? matchingSpecialLives : status === "all" ? matches : matches.filter((stream) => stream.status === status);
   const descending = special || status === "past";
-  visible.sort((left, right) => {
-    const leftDate = validDate(left.startAt);
-    const rightDate = validDate(right.startAt);
-    if (!leftDate || !rightDate) return Number(!leftDate) - Number(!rightDate);
-    return descending ? rightDate - leftDate : leftDate - rightDate;
-  });
+  if (!special) {
+    visible.sort((left, right) => {
+      const leftDate = validDate(left.startAt);
+      const rightDate = validDate(right.startAt);
+      if (!leftDate || !rightDate) return Number(!leftDate) - Number(!rightDate);
+      return descending ? rightDate - leftDate : leftDate - rightDate;
+    });
+  }
 
   const content = [];
   if (special) {
@@ -393,14 +441,20 @@ function renderSchedule() {
     content.push(heading);
   }
 
-  if (visible.length) {
-    content.push(...renderStreams(visible, channels, descending, special ? archiveDay : shortDay));
+  if (!visible) {
+    content.push(loading
+      ? stateCard("3Dライブを取得しています", "", { loading: true })
+      : stateCard("3Dライブを取得できませんでした", error, { action: () => loadSchedule(), actionLabel: "もう一度試す" }));
+  } else if (visible.length) {
+    const shown = special ? visible.slice(0, state.specialLimit) : visible;
+    content.push(...renderStreams(shown, channels, descending, special ? archiveDay : shortDay));
+    if (shown.length < visible.length) content.push(renderMoreSpecialLives());
   } else if (groups || query) {
     content.push(stateCard("条件に一致する配信はありません", "", {
       action: () => {
         scheduleGroup.value = "";
         scheduleSearch.value = "";
-        renderSchedule();
+        renderAfterFilterChange();
         scheduleSearch.focus();
       },
       actionLabel: "絞り込みを解除",
@@ -429,6 +483,9 @@ function selectTab(tab) {
     candidate.tabIndex = candidate === tab ? 0 : -1;
   }
   schedulePanel.setAttribute("aria-labelledby", tab.id);
+  if (state.status === "special" && state.loadMode !== "special" && (state.loadMode === "schedule" || !Array.isArray(state.data?.specialLives))) {
+    return loadSchedule();
+  }
   renderSchedule();
 }
 
@@ -536,6 +593,7 @@ async function mutateChannel(channel, method, body, success, focusTarget) {
       state.data.streams = state.data.streams.filter(({ channelId }) => channelId !== channel.id);
       if (state.data.specialLives) {
         state.data.specialLives = state.data.specialLives.filter(({ channelId }) => channelId !== channel.id);
+        state.data.specialLivesCount = state.data.specialLives.length;
       }
     } else if (current) {
       Object.assign(current, body);
@@ -601,13 +659,14 @@ async function submitArchives(form, { contentType, body, date, special = false }
       body,
     });
     form.reset();
+    let reload;
     if (date) {
       archiveDate.value = date;
       updateArchiveChannels(state.data?.channels ?? []);
-      selectDate(date, { special });
+      reload = selectDate(date, { special });
     }
     setMessage(message, `追加 ${added} 件、スキップ ${skipped} 件。`);
-    await loadSchedule();
+    await (reload ?? loadSchedule());
   } catch (error) {
     setMessage(message, error.message, "error");
   } finally {
@@ -644,8 +703,8 @@ for (const button of dateShortcuts) {
     selectDate(relativeDate(button.dataset.dateOffset, now), { now });
   });
 }
-scheduleSearch.addEventListener("input", renderSchedule);
-scheduleGroup.addEventListener("change", renderSchedule);
+scheduleSearch.addEventListener("input", renderAfterFilterChange);
+scheduleGroup.addEventListener("change", renderAfterFilterChange);
 rosterSearch.addEventListener("input", () => renderRoster());
 rosterGroup.addEventListener("change", () => renderRoster());
 retainedFilter.addEventListener("change", () => renderRoster());

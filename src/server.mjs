@@ -83,7 +83,7 @@ export function createApp({
       const url = new URL(request.url, 'http://localhost');
       if (request.method === 'GET' && url.pathname === '/api/schedule') {
         await schedule.refresh(url.searchParams.get('refresh') === '1');
-        return json(response, 200, schedule.snapshot());
+        return json(response, 200, schedule.snapshot({ includeSpecialLives: url.searchParams.get('special') !== '0' }));
       }
 
       if (request.method === 'POST' && url.pathname === '/api/channels') {

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { createScheduleService } from '../src/schedule.mjs';
+import { createApp } from '../src/server.mjs';
 import { initialSpecialLives, specialLiveChannelIds } from '../src/special-lives.mjs';
 import { specialLiveArchives } from '../src/data/special-live-archives.mjs';
 
@@ -30,6 +31,29 @@ test('the manually researched catalog has unique watch IDs, known channels, and 
     assert.match(entry.scheduleDate, /^\d{4}-\d{2}-\d{2}$/);
     assert.equal(entry.status, 'past');
   }
+});
+
+test('schedule can return only the visible 3D count without sending the archive list', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'haishin-3d-count-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const { server, schedule } = createApp({
+    file: join(dir, 'schedule.json'), now: () => baseTime,
+    providers: { getHololive: async () => ({ channels: [miko], streams: [], scheduleAvailable: true }) },
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const read = async (path) => (await fetch(`${origin}/api/schedule${path}`)).json();
+
+  const compact = await read('?special=0');
+  assert.equal(Object.hasOwn(compact, 'specialLives'), false);
+  assert.equal(compact.specialLivesCount, initialSpecialLives.size);
+  schedule.removeChannel(miko.id);
+  const full = await read('');
+  assert.equal(full.specialLivesCount, full.specialLives.length);
+  assert.ok(full.specialLivesCount < compact.specialLivesCount);
+  assert.ok(full.specialLives.every(({ channelId }) => channelId !== miko.id));
+  assert.equal((await read('?special=0')).specialLivesCount, full.specialLivesCount);
 });
 
 test('only qualifying Holodule listings enter the 3D tab and are kept after feed removal and restart', async (t) => {

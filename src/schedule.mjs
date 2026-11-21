@@ -183,22 +183,30 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, no
     }));
   }
 
-  function snapshot() {
+  function snapshot({ includeSpecialLives = true } = {}) {
     const channels = availableChannels();
     const time = now();
     const streams = retainStreams(state.streams, channels.filter(({ hidden }) => !hidden), state.preferences, time, state.holoduleIds);
-    const specialLives = new Map(initialSpecialLives);
+    const specialLives = state.specialLives.length ? new Map(initialSpecialLives) : initialSpecialLives;
     for (const stream of state.specialLives) {
       specialLives.set(stream.id, { ...specialLives.get(stream.id), ...stream });
     }
     const hiddenIds = new Set(state.hidden);
+    let specialLivesCount = 0;
+    const visibleSpecialLives = includeSpecialLives ? [] : null;
+    for (const stream of specialLives.values()) {
+      if (!specialLiveChannelIds.has(stream.channelId) || hiddenIds.has(stream.channelId)) continue;
+      const visible = displayStream(stream, time);
+      if (!visible) continue;
+      specialLivesCount++;
+      visibleSpecialLives?.push(visible);
+    }
 
     return {
       channels,
       streams: streams.map((stream) => displayStream(stream, time)).filter(Boolean),
-      specialLives: [...specialLives.values()]
-        .filter(({ channelId }) => specialLiveChannelIds.has(channelId) && !hiddenIds.has(channelId))
-        .map((stream) => displayStream(stream, time)).filter(Boolean),
+      specialLivesCount,
+      ...(visibleSpecialLives ? { specialLives: visibleSpecialLives } : {}),
       warnings,
       updatedAt: state.updatedAt ?? null,
     };

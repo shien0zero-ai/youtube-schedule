@@ -124,6 +124,7 @@ h1, h2, p { margin: 0; }
 .select-field select { width: auto; max-width: 100%; padding-right: 8px; }
 
 .schedule-panel { border-radius: var(--radius); }
+.schedule-more { display: flex; justify-content: center; margin-top: 16px; }
 .special-archive-heading { margin: 0 0 17px; }
 .special-archive-heading h3 { margin: 0 0 4px; font-size: 1rem; }
 .special-archive-heading p { color: var(--muted); font-size: .82rem; line-height: 1.65; }
