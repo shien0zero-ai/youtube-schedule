@@ -71,6 +71,9 @@ function mergeStreams(existing, incoming, time) {
       ? previous?.endAt ?? (liveEnded ? new Date(time).toISOString() : null)
       : null);
     const mergedStream = { ...stream, endAt };
+    if (!stream.endAt && endAt && (previous?.endAt ? previous.endAtEstimated : liveEnded)) {
+      mergedStream.endAtEstimated = true;
+    }
     if (!stream.title && previous?.title) mergedStream.title = previous.title;
     if (stream.isBroadcast == null && previous?.isBroadcast != null) mergedStream.isBroadcast = previous.isBroadcast;
     if (previous?.manualArchive) {
@@ -152,6 +155,7 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, ge
         status: video.status ?? stream.status,
         startAt: video.startAt ?? stream.startAt,
         endAt: video.endAt ?? stream.endAt,
+        ...(video.endAt && stream.endAtEstimated ? { endAtEstimated: undefined } : {}),
         missingFromSource: video.status === 'past' ? undefined : stream.missingFromSource,
       }),
     };

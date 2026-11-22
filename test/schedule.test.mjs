@@ -227,6 +227,33 @@ test('archives elapsed listings after restart, preserves withdrawn plans, and re
   assert.deepEqual(updated.streams.find(({ id }) => id === scheduled.id), published);
 });
 
+test('distinguishes the time a broadcast was seen to have ended from its actual end time', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'youtube-schedule-end-time-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  let time = Date.parse('2026-11-22T14:59:00Z');
+  let current = { ...stream('late-stream', 'live', 0), channelId: official.id, startAt: '2026-11-22T14:00:00.000Z' };
+  const request = await startApp(t, {
+    file: join(dir, 'schedule.json'), now: () => time,
+    providers: { getHololive: async () => ({ channels: [official], streams: [current] }) },
+  });
+  const read = async () => (await (await request('/api/schedule?refresh=1')).json()).streams[0];
+  await read();
+
+  time += 2 * 60_000;
+  current = { ...current, status: 'past' };
+  assert.equal((await read()).endAtEstimated, true);
+  time += 2 * 60_000;
+  const archived = await read();
+  assert.equal(archived.endAt, '2026-11-22T15:01:00.000Z');
+  assert.equal(archived.endAtEstimated, true);
+
+  time += 2 * 60_000;
+  current = { ...current, endAt: '2026-11-22T14:59:30.000Z' };
+  const confirmed = await read();
+  assert.equal(confirmed.endAt, current.endAt);
+  assert.equal(confirmed.endAtEstimated, undefined);
+});
+
 test('withholds unscoped Holodule cache and restores saved history for verified Hololive channels', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'youtube-schedule-'));
   t.after(() => rm(dir, { recursive: true, force: true }));

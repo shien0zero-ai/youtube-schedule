@@ -157,6 +157,17 @@ function streamDay(stream) {
   return date ? jstDateKey(date) : stream.scheduleDate ?? "";
 }
 
+function streamMatchesDate(stream, day, now) {
+  if (!day) return true;
+  const startDay = streamDay(stream);
+  if (startDay === day) return true;
+  if (!startDay || startDay > day || !validDate(stream.startAt)) return false;
+
+  const midnight = Date.parse(`${day}T00:00:00+09:00`);
+  if (stream.status === "live") return midnight <= now.getTime();
+  return stream.status === "past" && !stream.endAtEstimated && Date.parse(stream.endAt) > midnight;
+}
+
 function newestFirst(streams) {
   const dated = streams.map((stream) => {
     const start = validDate(stream.startAt ?? stream.publishedAt);
@@ -360,7 +371,7 @@ function media(container, source, fallbackText) {
   container.append(image);
 }
 
-function renderStream(stream, channel, { mv = false, showDay = false, order = "newest" } = {}) {
+function renderStream(stream, channel, { mv = false, showDay = false, selectedDay, order = "newest" } = {}) {
   const streamUrl = webUrl(stream.url);
   const card = element(streamUrl ? "a" : "article", "stream");
   if (streamUrl) {
@@ -385,7 +396,9 @@ function renderStream(stream, channel, { mv = false, showDay = false, order = "n
   const streamDate = validDate(stream.startAt ?? stream.publishedAt);
   if (streamDate) {
     const clockLabel = clock.format(streamDate);
-    const time = element("time", "", showDay ? `${archiveDay.format(streamDate)} ${clockLabel}` : clockLabel);
+    const spansDays = selectedDay && selectedDay !== jstDateKey(streamDate);
+    const start = spansDays ? `${shortDay.format(streamDate)} ${clockLabel} 開始` : clockLabel;
+    const time = element("time", "", showDay ? `${archiveDay.format(streamDate)} ${clockLabel}` : start);
     time.dateTime = streamDate.toISOString();
     meta.append(time);
   } else if (showDay && stream.scheduleDate) {
@@ -424,10 +437,10 @@ function renderStreamList(streams, channels, options) {
   return list;
 }
 
-function renderStreams(streams, channels, { descending, dateFormat = shortDay, mv = false }) {
+function renderStreams(streams, channels, { descending, dateFormat = shortDay, mv = false, selectedDay }) {
   const groups = new Map();
   for (const stream of streams) {
-    const day = streamDay(stream);
+    const day = selectedDay || streamDay(stream);
     if (!groups.has(day)) groups.set(day, []);
     groups.get(day).push(stream);
   }
@@ -437,7 +450,7 @@ function renderStreams(streams, channels, { descending, dateFormat = shortDay, m
   if (groups.has("")) days.push("");
   return days.map((day) => {
     const section = element("section", "stream-group");
-    const list = renderStreamList(groups.get(day), channels, { mv });
+    const list = renderStreamList(groups.get(day), channels, { mv, selectedDay });
     section.append(element("h3", "stream-day", day ? dayLabel(day, dateFormat) : "日時未定"), list);
     return section;
   });
@@ -517,9 +530,10 @@ function renderSchedule() {
       (!channel && searchValue(stream.channelName).includes(query)) ||
       (stream.memberReading && searchValue(stream.memberReading).includes(query));
   };
-  const matches = data.streams.filter((stream) => (!scheduleDate || streamDay(stream) === scheduleDate) && matchesFilters(stream));
+  const matches = data.streams.filter((stream) => streamMatchesDate(stream, scheduleDate, now) && matchesFilters(stream));
   const matchingCatalog = catalog ? data[catalog.items]?.filter((stream) => (
-    (!date || streamDay(stream) === date) && (!musicKind || stream.musicKind === musicKind) && matchesFilters(stream)
+    (mv ? !date || streamDay(stream) === date : streamMatchesDate(stream, date, now)) &&
+    (!musicKind || stream.musicKind === musicKind) && matchesFilters(stream)
   )) : null;
 
   byId("count-all").textContent = matches.length;
@@ -571,7 +585,7 @@ function renderSchedule() {
     if (flatMusicList) {
       content.push(renderStreamList(shown, channels, { mv, showDay: true, order: state.mvOrder }));
     } else {
-      content.push(...renderStreams(shown, channels, { descending, dateFormat: catalog ? archiveDay : shortDay, mv }));
+      content.push(...renderStreams(shown, channels, { descending, dateFormat: catalog ? archiveDay : shortDay, mv, selectedDay: date }));
     }
     if (shown.length < visible.length) content.push(renderMore(catalogView));
   } else if (groups || query || musicKind) {
@@ -946,7 +960,17 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
+function renderAtNextMidnight() {
+  const now = new Date();
+  const midnight = Date.parse(`${relativeDate(1, now)}T00:00:00+09:00`);
+  window.setTimeout(() => {
+    if (!document.hidden) renderSchedule();
+    renderAtNextMidnight();
+  }, midnight - now.getTime());
+}
+
 loadSchedule();
+renderAtNextMidnight();
 window.setInterval(() => {
   if (!document.hidden && !state.loading && !dialog.open && !archiveDialog.open) loadSchedule();
 }, 90_000);
