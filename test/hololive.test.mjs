@@ -165,6 +165,81 @@ test('uses enough YouTube metadata to recover every title across a large officia
   assert.ok(result.streams.every(({ title, isBroadcast }) => title.startsWith('公開動画 ') && isBroadcast !== true));
 });
 
+test('manually retries a title-less listing without discarding the normal retry delay', async () => {
+  const id = 'missing1234';
+  let time = now();
+  let available = false;
+  let attempts = 0;
+  const options = {
+    now: () => time,
+    apiKey: 'test',
+    async fetchImpl(url) {
+      if (typeof url === 'string') return new Response(schedule(`<div class="holodule navbar-text">01/01</div>${card(id, 'ときのそら', '15:00')}`));
+      if (!url.pathname.endsWith('/videos')) return new Response(null, { status: 503 });
+      assert.equal(url.searchParams.get('id'), id);
+      attempts++;
+      if (!available) return new Response(null, { status: 503 });
+      return Response.json({ items: [{
+        id,
+        snippet: { title: '予定していた配信のタイトル', channelId: soraId },
+        liveStreamingDetails: { scheduledStartTime: '2027-01-01T06:00:00Z' },
+        contentDetails: { duration: 'P0D' },
+      }] });
+    },
+  };
+  const initial = await getHololive(options);
+  assert.equal(initial.streams[0].title, null);
+  assert.equal(attempts, 1);
+
+  time += 20_000;
+  available = true;
+  const automatic = await getHololive(options);
+  assert.equal(automatic.streams[0].title, null);
+  assert.equal(attempts, 1);
+
+  const manual = await getHololive({ ...options, force: true });
+  assert.equal(manual.streams[0].title, '予定していた配信のタイトル');
+  assert.equal(attempts, 2);
+  await getHololive({ ...options, force: true });
+  assert.equal(attempts, 2);
+});
+
+test('retains a known title after a failed lookup without keeping stale live state', async () => {
+  const id = 'pastlive123';
+  let time = now();
+  let available = true;
+  let attempts = 0;
+  const options = {
+    now: () => time,
+    apiKey: 'test',
+    async fetchImpl(url) {
+      if (typeof url === 'string') return new Response(schedule(`<div class="holodule navbar-text">12/31</div>${card(id, 'ときのそら', '23:00')}`));
+      if (!url.pathname.endsWith('/videos')) return new Response(null, { status: 503 });
+      assert.equal(url.searchParams.get('id'), id);
+      attempts++;
+      if (!available) return new Response(null, { status: 503 });
+      return Response.json({ items: [{
+        id,
+        snippet: { title: '年越しの実際のタイトル', channelId: soraId },
+        liveStreamingDetails: { actualStartTime: '2026-12-31T14:05:00Z' },
+        contentDetails: { duration: 'P0D' },
+      }] });
+    },
+  };
+  const initial = await getHololive(options);
+  assert.equal(initial.streams[0].status, 'live');
+  assert.equal(initial.streams[0].startAt, '2026-12-31T14:05:00.000Z');
+
+  time += 121_000;
+  available = false;
+  const refreshed = await getHololive(options);
+  assert.equal(attempts, 2);
+  assert.equal(refreshed.streams[0].title, '年越しの実際のタイトル');
+  assert.equal(refreshed.streams[0].status, 'past');
+  assert.equal(refreshed.streams[0].startAt, '2026-12-31T14:00:00.000Z');
+  assert.equal(refreshed.streams[0].endAt, null);
+});
+
 test('enriches YouTube only and preserves the source label for newly discovered groups', async () => {
   const id = 'regloss1234';
   const markup = schedule(`

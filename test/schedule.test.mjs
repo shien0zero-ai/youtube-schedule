@@ -328,3 +328,75 @@ test('filters cached and current uploads while recovering real broadcast titles 
   const second = await (await request('/api/schedule?refresh=1')).json();
   assert.equal(second.streams.find(({ id }) => id === shown.id).title, '今夜のゲーム配信');
 });
+
+test('fills missing titles on page load and retries misses immediately on manual update', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'youtube-schedule-title-retry-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'schedule.json');
+  const archive = { ...stream('liveArchive', 'past', -30, -29), channelId: official.id, title: `${official.name} の配信` };
+  await writeFile(file, JSON.stringify({ roster: [official], custom: [], preferences: {}, streams: [archive] }));
+  const ongoing = { ...stream('noTitleLive', 'live', -1), channelId: official.id, title: null };
+  const unknown = { ...stream('notVerified', 'upcoming', 3), channelId: official.id, title: null, isBroadcast: null };
+  const known = { ...stream('knownTitle1', 'upcoming', 4), channelId: official.id, title: '取得済みのタイトル' };
+  const attempts = [];
+  const refreshes = [];
+  const request = await startApp(t, {
+    file, now: () => baseTime,
+    providers: {
+      getHololive: async ({ force }) => {
+        refreshes.push(force);
+        return { channels: [official], streams: [ongoing, unknown, known] };
+      },
+      getYouTubeTitles: async (ids) => {
+        attempts.push(ids);
+        return ids.length > 1 ? [
+          { id: archive.id, title: 'アーカイブの正式タイトル' }, { id: unknown.id, title: '配信かどうか未確認' },
+        ] : [{ id: ongoing.id, title: '配信中の正式タイトル' }];
+      },
+    },
+  });
+  const read = async (query = '') => (await (await request('/api/schedule' + query)).json()).streams;
+  const first = await read();
+  assert.deepEqual(attempts, [[ongoing.id, unknown.id, archive.id]]);
+  assert.deepEqual(first.map(({ id, title }) => [id, title]), [
+    [archive.id, 'アーカイブの正式タイトル'], [ongoing.id, null], [known.id, known.title],
+  ]);
+  assert.deepEqual(await read(), first);
+  assert.equal(attempts.length, 1);
+
+  const updated = await read('?refresh=1');
+  assert.deepEqual(refreshes, [false]);
+  assert.deepEqual(attempts.at(-1), [ongoing.id]);
+  assert.equal(updated.find(({ id }) => id === ongoing.id).title, '配信中の正式タイトル');
+  assert.equal(updated.find(({ id }) => id === ongoing.id).status, 'live');
+  assert.equal(JSON.parse(await readFile(file, 'utf8')).streams.find(({ id }) => id === ongoing.id).title, '配信中の正式タイトル');
+});
+
+test('queues a manual title retry behind a scheduled lookup in progress', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'youtube-schedule-title-inflight-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const ongoing = { ...stream('noTitleLive', 'live', -1), channelId: official.id, title: null };
+  const started = Promise.withResolvers();
+  const first = Promise.withResolvers();
+  let lookups = 0;
+  const { schedule } = createApp({
+    file: join(dir, 'schedule.json'), now: () => baseTime,
+    providers: {
+      getHololive: async () => ({ channels: [official], streams: [ongoing] }),
+      getYouTubeTitles: async () => {
+        if (++lookups === 1) {
+          started.resolve();
+          return first.promise;
+        }
+        return [{ id: ongoing.id, title: '再取得したタイトル' }];
+      },
+    },
+  });
+  const scheduled = schedule.refresh();
+  await started.promise;
+  const manual = schedule.refresh(true);
+  first.resolve([]);
+  await Promise.all([scheduled, manual]);
+  assert.equal(lookups, 2);
+  assert.equal(schedule.snapshot().streams[0].title, '再取得したタイトル');
+});

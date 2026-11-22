@@ -15,6 +15,9 @@ const REFRESH_INTERVAL = 2 * 60 * 1000;
 const FORCED_REFRESH_INTERVAL = 15 * 1000;
 const ARCHIVE_LOOKUP_LIMIT = 6;
 const ARCHIVE_RETRY_INTERVAL = 6 * 60 * 60 * 1000;
+const TITLE_LOOKUP_LIMIT = 12;
+const TITLE_RETRY_INTERVAL = 6 * 60 * 1000;
+const titlePriority = { live: 0, upcoming: 1, past: 2 };
 const aliasesByChannel = new Map(Object.values(rosterGroups).flat().map(([id, , aliases]) => [id, aliases]));
 
 function readState(path) {
@@ -99,7 +102,10 @@ function updateSpecialLives(saved, official, time) {
   return mergeStreams(existing, incoming, time);
 }
 
-export function createScheduleService({ file, getHololive, getYouTubeChannel, getYouTubeVideos, normalizeChannelUrl, getMusicVideos, getRecentMusicVideos, now = Date.now }) {
+export function createScheduleService({
+  file, getHololive, getYouTubeChannel, getYouTubeVideos, getYouTubeTitles, normalizeChannelUrl,
+  getMusicVideos, getRecentMusicVideos, now = Date.now,
+}) {
   const music = createMusicVideoCatalog({ scheduleFile: file, now, getMusicVideos, getRecentMusicVideos });
   let state = { hidden: [], holoduleIds: [], specialLives: [], ...readState(file) };
   if (!state.specialLives.length && state.holoduleIds.length) {
@@ -111,7 +117,9 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, ge
   let lastAttempt = null;
   let warnings = [];
   let refreshing;
+  let fillingTitles;
   const archiveRetries = new Map();
+  const titleAttempts = new Map();
 
   function save(next) {
     next.streams = retainStreams(next.streams, [...next.roster, ...next.custom], next.preferences, now(), next.holoduleIds);
@@ -161,10 +169,10 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, ge
     };
   }
 
-  async function refreshSources() {
+  async function refreshSources(force) {
     lastAttempt = now();
     const registered = state.custom;
-    const hololive = Promise.resolve().then(getHololive).catch(() => null);
+    const hololive = Promise.resolve().then(() => getHololive({ force })).catch(() => null);
     const archiveMetadata = recoverArchives(lastAttempt);
     const customStreams = [];
     const failures = [];
@@ -237,12 +245,70 @@ export function createScheduleService({ file, getHololive, getYouTubeChannel, ge
     ];
   }
 
+  async function recoverMissingTitles(force) {
+    const streams = [...state.streams, ...state.specialLives];
+    if (streams.every((stream) => stream.title || stream.holoduleTitle)) {
+      titleAttempts.clear();
+      return;
+    }
+    const time = now();
+    const hidden = new Set(state.hidden);
+    const missing = new Map();
+    const titles = new Map();
+    for (const stream of streams) {
+      if (hidden.has(stream.channelId) || isNonBroadcast(stream)) continue;
+      const id = youtubeVideoId(URL.parse(stream.url));
+      if (!id) continue;
+      const title = stream.title ?? stream.holoduleTitle ?? initialSpecialLives.get(id)?.title;
+      if (title) {
+        titles.set(id, title);
+        continue;
+      }
+      const priority = titlePriority[stream.status] ?? titlePriority.past;
+      if (!missing.has(id) || priority < missing.get(id)) missing.set(id, priority);
+    }
+
+    const lastTry = (id) => titleAttempts.get(id) ?? -Infinity;
+    for (const id of titleAttempts.keys()) if (!missing.has(id) || titles.has(id)) titleAttempts.delete(id);
+    const ids = [...missing.keys()]
+      .filter((id) => !titles.has(id) && (force || time - lastTry(id) >= TITLE_RETRY_INTERVAL))
+      .sort((left, right) => missing.get(left) - missing.get(right) || lastTry(left) - lastTry(right))
+      .slice(0, TITLE_LOOKUP_LIMIT);
+    if (ids.length) {
+      for (const id of ids) titleAttempts.set(id, time);
+      const found = await Promise.resolve().then(() => getYouTubeTitles(ids)).catch(() => []);
+      for (const { id, title } of found) if (ids.includes(id) && title) titles.set(id, title);
+    }
+    if (![...missing.keys()].some((id) => titles.has(id))) return;
+
+    const names = new Map([...state.roster, ...state.custom].map(({ id, name }) => [id, name]));
+    const fill = (stream) => {
+      if (stream.title || stream.holoduleTitle || state.hidden.includes(stream.channelId)) return stream;
+      const id = youtubeVideoId(URL.parse(stream.url));
+      const title = missing.has(id) ? knownTitle(titles.get(id), names.get(stream.channelId)) : null;
+      return title ? { ...stream, title } : stream;
+    };
+    save({ ...state, streams: state.streams.map(fill), specialLives: state.specialLives.map(fill) });
+  }
+
+  function refreshMissingTitles(force) {
+    if (!getYouTubeTitles) return;
+    if (fillingTitles) {
+      if (!force || fillingTitles.force) return fillingTitles.promise;
+      return fillingTitles.promise.then(() => refreshMissingTitles(true));
+    }
+    const promise = recoverMissingTitles(force).finally(() => { fillingTitles = undefined; });
+    fillingTitles = { force, promise };
+    return promise;
+  }
+
   async function refresh(force = false) {
-    if (refreshing) return refreshing;
     const interval = force ? FORCED_REFRESH_INTERVAL : REFRESH_INTERVAL;
-    if (lastAttempt !== null && now() - lastAttempt < interval) return;
-    refreshing = refreshSources().finally(() => { refreshing = undefined; });
-    return refreshing;
+    if (!refreshing && (lastAttempt === null || now() - lastAttempt >= interval)) {
+      refreshing = refreshSources(force).finally(() => { refreshing = undefined; });
+    }
+    await refreshing;
+    await refreshMissingTitles(force);
   }
 
   function availableChannels() {

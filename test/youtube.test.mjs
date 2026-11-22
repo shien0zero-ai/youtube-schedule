@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { getYouTubeChannel, getYouTubeVideos, normalizeChannelUrl } from '../src/youtube.mjs';
+import { getYouTubeChannel, getYouTubeTitles, getYouTubeVideos, normalizeChannelUrl } from '../src/youtube.mjs';
 
 const channelId = 'UC1234567890123456789012';
 const upcomingId = 'upcoming123';
@@ -244,4 +244,74 @@ test('optionally verifies a bounded number of uncertain API rows without losing 
   assert.deepEqual(checked, ids.slice(0, 6));
   assert.deepEqual(verified.map(({ isBroadcast }) => isBroadcast), [true, false, null, null, null, null, null, null]);
   assert.ok(verified.every(({ title, startAt }) => title === 'API のタイトル' && startAt === '2026-11-18T21:00:00.000Z'));
+});
+
+test('recovers YouTube titles from one API request and uses public metadata for individual misses', async () => {
+  const embeds = [];
+  const watched = [];
+  const fetchImpl = async (url, options) => {
+    assert.equal(options.redirect, 'manual');
+    if (url.hostname === 'www.googleapis.com') {
+      assert.equal(url.pathname, '/youtube/v3/videos');
+      assert.equal(url.searchParams.get('part'), 'snippet');
+      assert.equal(url.searchParams.get('id'), [pastId, liveId, upcomingId, shortId].join(','));
+      assert.equal(options.headers['X-Goog-Api-Key'], 'unit-test-key');
+      return Response.json({ items: [
+        { id: pastId, snippet: { title: ' 配信タイトル ' } },
+        { id: premiereId, snippet: { title: '対象外のタイトル' } },
+        { id: liveId, snippet: { title: ' [Private video] ' } },
+      ] });
+    }
+    assert.equal(url.hostname, 'www.youtube.com');
+    if (url.pathname === '/oembed') {
+      const videoUrl = new URL(url.searchParams.get('url'));
+      const id = videoUrl.searchParams.get('v');
+      assert.equal(videoUrl.href, `https://www.youtube.com/watch?v=${id}`);
+      assert.equal(url.searchParams.get('format'), 'json');
+      embeds.push(id);
+      if (id === liveId) return Response.json({ title: ' YouTube の配信名 ' });
+      if (id === upcomingId) return new Response('Invalid JSON');
+      return new Response('', { status: 404 });
+    }
+    assert.equal(url.pathname, '/watch');
+    const id = url.searchParams.get('v');
+    watched.push(id);
+    if (id === upcomingId) return watchPage(id, undefined, { title: '公開ページの配信タイトル' });
+    return watchPage(premiereId, undefined, { title: '別の動画タイトル' });
+  };
+
+  const titles = await getYouTubeTitles([pastId, liveId, upcomingId, shortId, pastId, 'invalid'], { fetchImpl, apiKey: 'unit-test-key' });
+  assert.deepEqual(titles, [
+    { id: pastId, title: '配信タイトル' },
+    { id: liveId, title: 'YouTube の配信名' },
+    { id: upcomingId, title: '公開ページの配信タイトル' },
+  ]);
+  assert.deepEqual(embeds, [liveId, upcomingId, shortId]);
+  assert.deepEqual(watched.sort(), [upcomingId, shortId].sort());
+});
+
+test('checks the entire bounded public title batch when there is no API key', async () => {
+  const ids = Array.from({ length: 13 }, (_, index) => `archive${String(index).padStart(4, '0')}`);
+  const lookedUp = [];
+  const fetchImpl = async (url) => {
+    assert.equal(url.pathname, '/oembed');
+    const id = new URL(url.searchParams.get('url')).searchParams.get('v');
+    lookedUp.push(id);
+    return Response.json({ title: `YouTube ${id}` });
+  };
+  const titles = await getYouTubeTitles(ids, { fetchImpl, apiKey: null });
+  assert.deepEqual(lookedUp, ids.slice(0, 12));
+  assert.deepEqual(titles, lookedUp.map((id) => ({ id, title: `YouTube ${id}` })));
+});
+
+test('tries unauthenticated YouTube titles after API denial and leaves unreachable titles unresolved', async () => {
+  const fetchImpl = async (url) => {
+    if (url.hostname === 'www.googleapis.com') return new Response('', { status: 403 });
+    if (url.pathname === '/oembed' && url.searchParams.get('url').endsWith(liveId)) return Response.json({ title: '公開中の配信' });
+    throw new Error('YouTube unavailable');
+  };
+  assert.deepEqual(await getYouTubeTitles([liveId, pastId], { fetchImpl, apiKey: 'unit-test-key' }), [
+    { id: liveId, title: '公開中の配信' },
+  ]);
+  assert.deepEqual(await getYouTubeTitles([pastId], { fetchImpl, apiKey: 'unit-test-key' }), []);
 });

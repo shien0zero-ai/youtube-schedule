@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArchiveCsv } from './archives.mjs';
 import { getHololive } from './hololive.mjs';
 import { getMusicVideos, getRecentMusicVideos } from './music-video-youtube.mjs';
-import { getYouTubeChannel, getYouTubeVideos, normalizeChannelUrl } from './youtube.mjs';
+import { getYouTubeChannel, getYouTubeTitles, getYouTubeVideos, normalizeChannelUrl } from './youtube.mjs';
 import { createScheduleService, REFRESH_INTERVAL } from './schedule.mjs';
 import { ScheduleError } from './schedule-error.mjs';
 
@@ -75,7 +75,7 @@ async function serveAsset(request, response, pathname) {
 
 export function createApp({
   file = defaultDataFile,
-  providers = { getHololive, getYouTubeChannel, getYouTubeVideos, normalizeChannelUrl, getRecentMusicVideos,
+  providers = { getHololive, getYouTubeChannel, getYouTubeTitles, getYouTubeVideos, normalizeChannelUrl, getRecentMusicVideos,
     getMusicVideos: process.env.YOUTUBE_API_KEY ? getMusicVideos : undefined },
   now,
 } = {}) {

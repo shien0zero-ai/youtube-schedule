@@ -10,6 +10,9 @@ const avatarHosts = new Set(['yt3.googleusercontent.com', 'yt3.ggpht.com', 'lh3.
 const recentLimit = 24;
 const requestTimeoutMs = 18_000;
 const supplementTimeoutMs = 5_000;
+const titleLookupLimit = 12;
+const titleApiTimeoutMs = 2_000;
+const titleEmbedTimeoutMs = 1_500;
 const completedVideos = new Map();
 const completedVideoLimit = 512;
 const completedVideoLifetimeMs = 6 * 60 * 60 * 1000;
@@ -446,6 +449,56 @@ export async function getYouTubeVideos(videoIds, {
     if (check?.isBroadcast == null || (video.channelId && check.channelId && video.channelId !== check.channelId)) return video;
     return { ...video, isBroadcast: check.isBroadcast };
   });
+}
+
+function recoveredTitle(value) {
+  const title = typeof value === 'string' ? value.trim() : '';
+  return /^(?:\[(?:private|deleted) video\]|(?:private|deleted) video|video unavailable|非公開動画|削除された動画)$/iu.test(title) ? '' : title;
+}
+
+async function readPublicTitle(id, options, embedOptions) {
+  const embed = new URL('/oembed', youtubeOrigin);
+  embed.searchParams.set('url', `${youtubeOrigin}/watch?v=${id}`);
+  embed.searchParams.set('format', 'json');
+  const result = await request(embed, embedOptions)
+    .then((response) => response.ok ? response.json() : null)
+    .catch(() => null);
+  const title = recoveredTitle(result?.title);
+  if (title || options.signal.aborted) return title;
+
+  const video = await readPublicStream({ id }, options).catch(() => null);
+  return recoveredTitle(video?.title);
+}
+
+export async function getYouTubeTitles(videoIds, { fetchImpl = fetch, apiKey = process.env.YOUTUBE_API_KEY } = {}) {
+  const ids = [...new Set(videoIds)].filter((id) => typeof id === 'string' && videoIdPattern.test(id)).slice(0, titleLookupLimit);
+  if (!ids.length) return [];
+
+  const options = { fetchImpl, signal: AbortSignal.timeout(supplementTimeoutMs) };
+  const titles = new Map();
+  if (apiKey) {
+    const signal = AbortSignal.any([options.signal, AbortSignal.timeout(titleApiTimeoutMs)]);
+    const result = await youtubeApi('videos', {
+      part: 'snippet', id: ids.join(','), fields: 'items(id,snippet(title))',
+    }, { fetchImpl, signal }, apiKey).catch(() => null);
+    if (Array.isArray(result?.items)) {
+      for (const item of result.items) {
+        const title = recoveredTitle(item?.snippet?.title);
+        if (title) titles.set(item.id, title);
+      }
+    }
+  }
+
+  const missing = ids.filter((id) => !titles.has(id));
+  if (missing.length && !options.signal.aborted) {
+    const signal = AbortSignal.any([options.signal, AbortSignal.timeout(titleEmbedTimeoutMs)]);
+    const embedOptions = { fetchImpl, signal };
+    await Promise.all(missing.map(async (id) => {
+      const title = await readPublicTitle(id, options, embedOptions);
+      if (title) titles.set(id, title);
+    }));
+  }
+  return ids.filter((id) => titles.has(id)).map((id) => ({ id, title: titles.get(id) }));
 }
 
 export async function getYouTubeChannel(rawUrl, { fetchImpl = fetch, apiKey = process.env.YOUTUBE_API_KEY } = {}) {

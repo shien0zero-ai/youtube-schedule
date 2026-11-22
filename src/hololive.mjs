@@ -4,7 +4,8 @@ import { officialHololiveChannelId, rosterGroups } from './data/hololive-roster.
 import { getYouTubeChannel, getYouTubeVideos, youtubeVideoId } from './youtube.mjs';
 
 const officialScheduleUrl = 'https://schedule.hololive.tv/lives/hololive';
-const hour = 60 * 60 * 1000;
+const minute = 60 * 1000;
+const hour = 60 * minute;
 const groups = Object.entries(rosterGroups).flatMap(([group, rows]) => rows.map(
   ([id, name, aliases, avatar, affiliation = 'active']) => ({
     aliases,
@@ -203,16 +204,22 @@ function enrichmentPriority(record, now) {
   return 1 + Math.abs(Date.parse(record.startAt) - now);
 }
 
-async function enrichAvailable(records, fetchImpl, time, apiKey) {
+async function enrichAvailable(records, fetchImpl, time, apiKey, force) {
   const cache = videoCaches.get(fetchImpl) ?? new Map();
   videoCaches.set(fetchImpl, cache);
   const recordIds = new Set(records.map(({ id }) => id));
   for (const id of cache.keys()) {
     if (!recordIds.has(id)) cache.delete(id);
   }
-  const candidates = records.filter(({ id, platform }) =>
-    platform === 'youtube' && !(cache.get(id)?.expiresAt > time));
-  candidates.sort((left, right) => Number(cache.has(left.id)) - Number(cache.has(right.id)) ||
+  const hasTitle = (record) => Boolean(record.title || cache.get(record.id)?.video?.title);
+  const candidates = records.filter((record) => {
+    if (record.platform !== 'youtube') return false;
+    if (force && !hasTitle(record)) return true;
+    const cached = cache.get(record.id);
+    return !(cached && (cached.retryAt ?? cached.expiresAt) > time);
+  });
+  candidates.sort((left, right) => (force ? Number(hasTitle(left)) - Number(hasTitle(right)) : 0) ||
+    Number(cache.has(left.id)) - Number(cache.has(right.id)) ||
     enrichmentPriority(left, time) - enrichmentPriority(right, time));
   const ids = candidates.slice(0, apiKey ? 150 : 12).map(({ id }) => id);
   if (ids.length) {
@@ -220,7 +227,12 @@ async function enrichAvailable(records, fetchImpl, time, apiKey) {
     const byId = new Map(videos.map((video) => [video.id, video]));
     for (const id of ids) {
       const video = byId.get(id);
-      const delay = video?.endAt ? 6 * hour : video?.status ? 2 * 60 * 1000 : 6 * 60 * 1000;
+      if (!video) {
+        // A failed lookup can delay the next request without renewing stale broadcast information.
+        cache.set(id, { ...cache.get(id), retryAt: time + 6 * minute });
+        continue;
+      }
+      const delay = video.endAt ? 6 * hour : video.status ? 2 * minute : 6 * minute;
       cache.set(id, { video, expiresAt: time + delay });
     }
   }
@@ -232,18 +244,18 @@ async function enrichAvailable(records, fetchImpl, time, apiKey) {
     const details = cached?.video;
     if (record.isBroadcast === false || details?.isBroadcast === false) knownNonBroadcastIds.add(record.id);
     const isBroadcast = holoduleBroadcast(record, details);
-    if (isBroadcast !== false && (isBroadcast === null || !details?.status || (record.status === 'past' && !details.endAt))) incomplete = true;
+    const actualStatus = cached?.expiresAt > time || details?.endAt ? details?.status : null;
+    if (isBroadcast !== false && (isBroadcast === null || !actualStatus || (record.status === 'past' && !details?.endAt))) incomplete = true;
     if (!details) return { ...record, isBroadcast };
     const channel = channelsById.has(record.channelId) ? channelsById.get(details.channelId) : null;
-    const fresh = cached.expiresAt > time;
-    const actualStatus = fresh || details.endAt ? details.status : null;
+    const title = details.title || record.title;
     return {
       ...record,
       channelId: channel?.id ?? record.channelId,
       ...(details.channelId && details.channelId !== (channel?.id ?? record.channelId) ? { uploaderChannelId: details.channelId } : {}),
-      title: details.title,
-      ...(record.title !== details.title ? { holoduleTitle: record.title } : {}),
-      thumbnail: details.thumbnail,
+      title,
+      ...(record.title !== title ? { holoduleTitle: record.title } : {}),
+      thumbnail: details.thumbnail ?? record.thumbnail,
       status: actualStatus ?? record.status,
       isBroadcast,
       startAt: actualStatus ? details.startAt ?? record.startAt : record.startAt,
@@ -253,7 +265,7 @@ async function enrichAvailable(records, fetchImpl, time, apiKey) {
   return { streams, incomplete, knownNonBroadcastIds };
 }
 
-async function readOfficialSchedule(fetchImpl, time, apiKey) {
+async function readOfficialSchedule(fetchImpl, time, apiKey, force) {
   const response = await fetchImpl(officialScheduleUrl, {
     headers: { Accept: 'text/html', 'Accept-Language': 'ja', Cookie: 'timezone=Asia/Tokyo' },
     redirect: 'error',
@@ -261,7 +273,7 @@ async function readOfficialSchedule(fetchImpl, time, apiKey) {
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   const { channels, streams } = parseOfficialSchedule(await response.text(), time);
-  return { channels, ...await enrichAvailable(streams, fetchImpl, time, apiKey) };
+  return { channels, ...await enrichAvailable(streams, fetchImpl, time, apiKey, force) };
 }
 
 async function readOfficialChannel(fetchImpl, apiKey) {
@@ -270,9 +282,9 @@ async function readOfficialChannel(fetchImpl, apiKey) {
   return channel;
 }
 
-export async function getHololive({ fetchImpl = fetch, now = Date.now, apiKey = process.env.YOUTUBE_API_KEY } = {}) {
+export async function getHololive({ fetchImpl = fetch, now = Date.now, apiKey = process.env.YOUTUBE_API_KEY, force = false } = {}) {
   const [scheduleResult, channelResult] = await Promise.allSettled([
-    readOfficialSchedule(fetchImpl, now(), apiKey),
+    readOfficialSchedule(fetchImpl, now(), apiKey, force),
     readOfficialChannel(fetchImpl, apiKey),
   ]);
   const schedule = scheduleResult.status === 'fulfilled' ? scheduleResult.value : null;
