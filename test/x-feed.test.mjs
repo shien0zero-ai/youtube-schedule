@@ -5,81 +5,88 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { createApp } from '../src/server.mjs';
 
-const baseTime = Date.parse('2026-11-23T12:00:00Z');
 const inaId = 'UCMwGHR0BTZuLsmjY_NT5Pwg';
 const ina = { id: inaId, name: 'Ninomae Ina’nis' };
-const minute = 60_000;
+const listUrl = 'https://x.com/i/lists/1900123456789012345';
 
-async function start(t, { providers, now }) {
-  const dir = await mkdtemp(join(tmpdir(), 'haishin-x-feed-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  const file = join(dir, 'schedule.json');
-  await writeFile(file, JSON.stringify({ roster: [ina], custom: [], preferences: {}, streams: [] }));
-  const { server } = createApp({ file, providers, now });
+async function start(t, file, providers = {}) {
+  const { server } = createApp({ file, providers });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  return (path, options) => fetch(origin + path, options);
+  const request = (path, options) => fetch(origin + path, options);
+  return {
+    request,
+    get: () => request('/api/x-posts'),
+    save: (payload) => request('/api/x-posts', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    }),
+  };
 }
 
-test('exposes only verified Hololive talent profiles when X is unconfigured, without loading schedules', async (t) => {
+test('loads a saved X list and roster without fetching X or updating the schedule', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'haishin-x-feed-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'schedule.json');
   let scheduleCalls = 0;
-  const request = await start(t, { providers: { getHololive: async () => { scheduleCalls++; } } });
-  const response = await request('/api/x-posts');
+  const providers = { getHololive: async () => { scheduleCalls++; } };
+  const app = await start(t, file, providers);
+  const response = await app.get();
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('cache-control'), 'no-store');
-  const payload = await response.json();
-  assert.equal(payload.available, false);
-  assert.equal(payload.updatedAt, null);
-  assert.deepEqual(payload.posts, []);
-  assert.ok(payload.accounts.length >= 60);
-  for (const account of payload.accounts) assert.match(account.group, /ホロライブ (?:JP|ID|EN)|hololive DEV_IS/);
-  assert.equal(new Set(payload.accounts.map(({ handle }) => handle.toLowerCase())).size, payload.accounts.length);
-  const account = payload.accounts.find(({ channelId }) => channelId === inaId);
+  const { accounts, listUrl: initial } = await response.json();
+  assert.equal(initial, null);
+  assert.ok(accounts.length >= 60);
+  assert.ok(accounts.every(({ group }) => /^(?:ホロライブ (?:JP|ID|EN)|hololive DEV_IS)$/.test(group)));
+  assert.equal(new Set(accounts.map(({ handle }) => handle.toLowerCase())).size, accounts.length);
+  const account = accounts.find(({ channelId }) => channelId === inaId);
   assert.equal(account.handle, 'ninomaeinanis');
   assert.ok(account.aliases.includes('Ina'));
   assert.ok(account.aliases.includes('にのまえいなにす'));
+
+  const saved = await app.save({ url: ' https://twitter.com/i/lists/1900123456789012345/?s=20#timeline ' });
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json()).listUrl, listUrl);
+  const restarted = await start(t, file, providers);
+  assert.deepEqual(await (await restarted.get()).json(), { accounts, listUrl });
   assert.equal(scheduleCalls, 0);
 });
 
-test('loads X posts on demand, shares a bounded cache and keeps scope on upstream failure', async (t) => {
-  let time = baseTime;
-  let calls = 0;
-  const inaPost = { id: '1111111111111111100', handle: 'NinomaeInanis', text: '昨日の配信ありがとう', createdAt: '2026-11-23T10:00:00Z' };
-  const mikoPost = { id: '1111111111111111101', handle: 'sakuramiko35', text: '今夜も配信します', createdAt: '2026-11-23T11:00:00Z' };
-  const future = { ...mikoPost, id: '1111111111111111102', createdAt: '2026-11-24T10:00:00Z' };
-  const expired = { ...mikoPost, id: '1111111111111111103', createdAt: '2026-11-15T10:00:00Z' };
-  const request = await start(t, { now: () => time, providers: {
-    getHololive: async () => null,
-    getXPosts: async (accounts) => {
-      assert.ok(accounts.some(({ handle }) => handle === 'ninomaeinanis'));
-      if (++calls > 1) {
-        throw Object.assign(new Error('internal credential data'), { status: 429, retryAt: time + 90 * minute });
-      }
-      return [inaPost, mikoPost, inaPost, future, expired, { ...mikoPost, id: '1', handle: 'outside' }];
-    },
-  } });
-  const read = async (query = '') => (await (await request('/api/x-posts' + query)).json());
-  await request('/api/schedule');
-  assert.equal(calls, 0);
-  const [initial, second] = await Promise.all([read(), read()]);
-  assert.equal(calls, 1);
-  assert.equal(initial.available, true);
-  assert.deepEqual(initial.posts, second.posts);
-  assert.deepEqual(initial.posts.map(({ id }) => id), [mikoPost.id, inaPost.id]);
-  assert.equal(initial.posts[1].url, `https://x.com/ninomaeinanis/status/${inaPost.id}`);
-  assert.equal(initial.updatedAt, new Date(time).toISOString());
+test('validates X list URLs before saving and supports replacement and removal', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'haishin-x-url-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'schedule.json');
+  const app = await start(t, file);
+  assert.equal((await app.save({ url: listUrl })).status, 200);
 
-  assert.equal((await request(`/api/channels/${inaId}`, { method: 'DELETE' })).status, 200);
-  assert.deepEqual((await read('?refresh=1')).posts.map(({ id }) => id), [mikoPost.id]);
-  assert.equal(calls, 1);
-  time += 30 * minute;
-  const stale = await read();
-  assert.equal(calls, 2);
-  assert.match(stale.warning, /取得制限/);
-  assert.equal(stale.updatedAt, initial.updatedAt);
-  assert.deepEqual(stale.posts.map(({ id }) => id), [mikoPost.id]);
-  time += 30 * minute;
-  assert.equal((await read()).warning, stale.warning);
-  assert.equal(calls, 2);
+  const invalid = [
+    'http://x.com/i/lists/123', 'https://x.com.evil.example/i/lists/123', 'https://x.com@evil.example/i/lists/123',
+    'https://user@x.com/i/lists/123', 'https://x.com:8443/i/lists/123', 'https://x.com/ninomaeinanis',
+    'https://x.com/i/lists/123/members', 'https://x.com/i/lists/0', 'https://x.com/i/lists/%31',
+    'javascript:alert(1)', 123, {}, '', undefined,
+  ];
+  for (const url of invalid) {
+    const response = await app.save({ url });
+    assert.equal(response.status, 400, String(url));
+    assert.match((await response.json()).error, /公開リスト/);
+  }
+  assert.equal((await (await app.get()).json()).listUrl, listUrl);
+
+  const replacement = 'https://x.com/i/lists/1234567890';
+  assert.equal((await (await app.save({ url: replacement })).json()).listUrl, replacement);
+  assert.equal((await (await app.save({ url: null })).json()).listUrl, null);
+  const restarted = await start(t, file);
+  assert.equal((await (await restarted.get()).json()).listUrl, null);
+});
+
+test('the X talent roster follows the channel visibility setting without changing the list URL', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'haishin-x-visibility-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'schedule.json');
+  await writeFile(file, JSON.stringify({ roster: [ina], custom: [], preferences: {}, streams: [], xListUrl: listUrl }));
+  const app = await start(t, file);
+  assert.equal((await app.request(`/api/channels/${inaId}`, { method: 'DELETE' })).status, 200);
+  const hidden = await (await app.get()).json();
+  assert.ok(hidden.accounts.every(({ channelId }) => channelId !== inaId));
+  assert.equal(hidden.listUrl, listUrl);
 });

@@ -8,6 +8,7 @@ import { createMusicVideoCatalog } from './music-videos.mjs';
 import { ScheduleError } from './schedule-error.mjs';
 import { initialSpecialLives, specialLiveChannelIds } from './special-lives.mjs';
 import { isSpecialLive } from './special-lives-classification.mjs';
+import { getXAccounts, normalizeXListUrl } from './x-feed.mjs';
 import { youtubeVideoId } from './youtube.mjs';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -459,10 +460,17 @@ export function createScheduleService({
     save({ ...state, hidden: state.hidden.filter((hiddenId) => hiddenId !== id) });
   }
 
-  return {
-    refresh, refreshMusicVideos: music.refresh, snapshot, addArchives, addChannel, setKeepPast, removeChannel, restoreChannel,
-    hiddenChannelIds: () => new Set(state.hidden),
-  };
+  function xSettings() {
+    return { accounts: getXAccounts(new Set(state.hidden)), listUrl: state.xListUrl ?? null };
+  }
+
+  function setXListUrl(value) {
+    save({ ...state, xListUrl: normalizeXListUrl(value) });
+    return xSettings();
+  }
+
+  return { refresh, refreshMusicVideos: music.refresh, snapshot, addArchives, addChannel, setKeepPast,
+    removeChannel, restoreChannel, xSettings, setXListUrl };
 }
 
 export { REFRESH_INTERVAL, ScheduleError };

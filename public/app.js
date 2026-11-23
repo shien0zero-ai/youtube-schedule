@@ -41,7 +41,6 @@ const emptyStates = {
 const timeZone = "Asia/Tokyo";
 const dayMilliseconds = 24 * 60 * 60 * 1000;
 const catalogPageSize = 40;
-const xPollInterval = 30 * 60 * 1000;
 const catalogTabs = {
   special: { items: "specialLives", count: "specialLivesCount", label: "3Dライブ" },
   mv: { items: "musicVideos", count: "musicVideosCount", label: "MV" },
@@ -59,8 +58,15 @@ const dateShortcuts = [...document.querySelectorAll("[data-date-offset]")];
 const schedulePanel = byId("schedule-panel");
 const scheduleSearch = byId("schedule-search");
 const scheduleGroup = byId("schedule-group");
+const xPanel = byId("x-panel");
 const xSearch = byId("x-search");
 const xGroup = byId("x-group");
+const xListForm = byId("x-list-form");
+const xListUrl = byId("x-list-url");
+const xClearList = byId("x-clear-list");
+const xListMessage = byId("x-list-message");
+const xTimeline = byId("x-timeline");
+const xResults = byId("x-results");
 const mvControls = byId("mv-controls");
 const mvSortButtons = [...byId("mv-sort").querySelectorAll("[data-mv-order]")];
 const mvKindButtons = [...byId("mv-kind").querySelectorAll("[data-mv-kind]")];
@@ -95,9 +101,10 @@ const state = {
   loadMode: null,
   loadVersion: 0,
   pendingChannels: new Set(),
-  x: { data: null, error: null, loading: false, lastCheck: 0, dateSelection: "", limit: catalogPageSize },
+  x: { data: null, error: null, loading: false, saving: false, selectedHandle: null, limit: catalogPageSize },
 };
 let xRequest = null;
+let xWidgetScript = null;
 
 function element(tag, className, value) {
   const node = document.createElement(tag);
@@ -229,11 +236,6 @@ function updateDateControls(selected, now) {
 
 function selectDate(date, { now = new Date(), status = state.status } = {}) {
   const selection = date === jstDateKey(now) ? "today" : date;
-  if (status === "x") {
-    state.x.dateSelection = selection;
-    state.x.limit = catalogPageSize;
-    return selectTab(byId("tab-x"));
-  }
   const catalog = state.catalogViews[status];
   if (catalog) {
     catalog.dateSelection = selection;
@@ -325,19 +327,22 @@ async function loadSchedule({ refresh = false } = {}) {
   }
 }
 
-function loadXPosts({ refresh = false } = {}) {
+function updateXData(data, { replacing = false } = {}) {
+  const previousUrl = state.x.data?.listUrl;
+  state.x.data = data;
+  setGroups(xGroup, data.accounts);
+  if (replacing || previousUrl !== data.listUrl) xListUrl.value = data.listUrl ?? "";
+  if (!data.accounts.some((account) => account.handle === state.x.selectedHandle)) state.x.selectedHandle = null;
+}
+
+function loadXRegistration() {
   if (xRequest) return xRequest;
   const view = state.x;
   view.loading = true;
-  view.lastCheck = Date.now();
   view.error = null;
   renderSchedule();
-  xRequest = request(refresh ? "/api/x-posts?refresh=1" : "/api/x-posts", { cache: "no-store" })
-    .then((data) => {
-      data.posts.sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
-      view.data = data;
-      setGroups(xGroup, data.accounts);
-    })
+  xRequest = request("/api/x-posts", { cache: "no-store" })
+    .then(updateXData)
     .catch((error) => { view.error = error.message; })
     .finally(() => {
       xRequest = null;
@@ -347,16 +352,38 @@ function loadXPosts({ refresh = false } = {}) {
   return xRequest;
 }
 
+function saveXRegistration(url) {
+  const view = state.x;
+  if (xRequest) return xRequest;
+  view.saving = true;
+  setMessage(xListMessage);
+  renderSchedule();
+  xRequest = request("/api/x-posts", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  }).then((data) => {
+    updateXData(data, { replacing: true });
+    view.selectedHandle = null;
+    setMessage(xListMessage, data.listUrl ? "公開リストを保存しました。" : "公開リストの登録を解除しました。");
+  }).catch((error) => {
+    setMessage(xListMessage, error.message, "error");
+  }).finally(() => {
+    xRequest = null;
+    view.saving = false;
+    if (state.status === "x") renderSchedule();
+  });
+  return xRequest;
+}
+
 function renderAlerts() {
   const node = byId("schedule-alerts");
-  const isX = state.status === "x";
-  const view = isX ? state.x : state;
-  const messages = isX ? [view.data?.available ? view.data.warning : null] : [...(view.data?.warnings ?? [])];
+  const messages = [...(state.data?.warnings ?? [])];
   if (state.status === "mv") messages.push(state.data?.musicVideosWarning);
   const warnings = [...new Set(messages)].filter(Boolean);
   const catalog = catalogTabs[state.status];
-  const hasContent = isX ? view.data?.posts.length : view.data && (!catalog || Array.isArray(view.data[catalog.items]));
-  if (view.error && hasContent) warnings.unshift("更新に失敗したため、直前に取得した情報を表示しています。");
+  const hasContent = state.data && (!catalog || Array.isArray(state.data[catalog.items]));
+  if (state.error && hasContent) warnings.unshift("更新に失敗したため、直前に取得した情報を表示しています。");
   node.hidden = warnings.length === 0;
   node.replaceChildren();
   if (warnings.length === 1) {
@@ -402,22 +429,28 @@ function media(container, source, fallbackText) {
 }
 
 function xSearchKey(value) {
-  return searchValue(value).replace(/^@/, "");
+  return searchValue(value).replace(/[^\p{L}\p{M}\p{N}]+/gu, "");
+}
+
+function visibleXAccounts(accounts) {
+  const hidden = new Set((state.data?.channels ?? []).filter((channel) => channel.hidden).map(({ id }) => id));
+  return accounts.filter((account) => !hidden.has(account.channelId));
 }
 
 function matchingXAccounts(accounts) {
   const group = xGroup.value;
   const query = xSearchKey(xSearch.value);
-  const hidden = new Set((state.data?.channels ?? []).filter((channel) => channel.hidden).map(({ id }) => id));
-  const inGroup = accounts.filter((account) => !hidden.has(account.channelId) && (!group || account.group === group));
+  const inGroup = group ? accounts.filter((account) => account.group === group) : accounts;
   if (!query) return inGroup;
+  const words = xSearch.value.normalize("NFKC").split(/[\s・]+/u).map(xSearchKey).filter(Boolean);
 
   const exact = [];
   const partial = [];
   for (const account of inGroup) {
     const names = [account.name, account.handle, ...(account.aliases ?? [])].map(xSearchKey);
     if (names.includes(query)) exact.push(account);
-    else if (names.some((name) => name.includes(query))) partial.push(account);
+    else if (names.some((name) => name.includes(query)) ||
+      (words.length > 1 && words.every((word) => names.some((name) => name.includes(word))))) partial.push(account);
   }
   return exact.length ? exact : partial;
 }
@@ -442,21 +475,117 @@ function openExternal(link, url) {
   link.rel = "noopener noreferrer";
 }
 
-function renderXPost(post, account) {
-  const url = webUrl(post.url);
-  const card = element(url ? "a" : "article", "x-post");
-  if (url) openExternal(card, url);
-  const header = element("div", "x-post-header");
-  header.append(renderXIdentity(account));
-  const published = validDate(post.createdAt);
-  if (published) {
-    const time = element("time", "", `${archiveDay.format(published)} ${clock.format(published)}`);
-    time.dateTime = published.toISOString();
-    header.append(time);
+function xProfileUrl(account) {
+  return "https://x.com/" + encodeURIComponent(account.handle.replace(/^@/, ""));
+}
+
+function loadXWidgets() {
+  const widgets = globalThis.twttr?.widgets;
+  if (widgets?.createTimeline || widgets?.load) return Promise.resolve(widgets);
+  if (!xWidgetScript) {
+    xWidgetScript = new Promise((resolve, reject) => {
+      const script = element("script");
+      script.src = "https://platform.twitter.com/widgets.js";
+      script.async = true;
+      const fail = () => {
+        clearTimeout(timer);
+        script.remove();
+        reject(new Error("Xの埋め込みを読み込めませんでした。"));
+      };
+      const timer = setTimeout(fail, 8000);
+      const ready = (api) => {
+        if (!api?.widgets?.createTimeline && !api?.widgets?.load) return fail();
+        clearTimeout(timer);
+        resolve(api.widgets);
+      };
+      script.onload = () => {
+        const api = globalThis.twttr;
+        if (api?.widgets?.createTimeline || api?.widgets?.load) ready(api);
+        else if (typeof api?.ready === "function") api.ready(ready);
+        else fail();
+      };
+      script.onerror = fail;
+      document.head.append(script);
+    }).catch((error) => {
+      xWidgetScript = null;
+      throw error;
+    });
   }
-  card.append(header, element("p", "x-post-text", post.text));
-  if (url) card.append(element("span", "x-link", "Xで投稿を開く ↗"));
-  return card;
+  return xWidgetScript;
+}
+
+function clearXTimeline() {
+  if (xTimeline.hidden) return;
+  xTimeline.replaceChildren();
+  xTimeline.hidden = true;
+  delete xTimeline.dataset.url;
+}
+
+function selectXAccount(account) {
+  state.x.selectedHandle = account.handle;
+  renderSchedule();
+  xTimeline.querySelector("a")?.focus();
+}
+
+function renderXTimeline(url, account) {
+  if (!url) return clearXTimeline();
+  if (xTimeline.dataset.url === url) return;
+  xTimeline.dataset.url = url;
+  xTimeline.hidden = false;
+
+  const header = element("div", "x-timeline-header");
+  header.append(element("h3", "", account ? `${account.name}の投稿` : "登録した公開リスト"));
+  const actions = element("div", "x-timeline-actions");
+  if (account) {
+    const back = element("button", "button secondary x-small-button", state.x.data.listUrl ? "登録リストに戻る" : "一覧に戻る");
+    back.type = "button";
+    back.addEventListener("click", () => {
+      state.x.selectedHandle = null;
+      renderSchedule();
+      if (xTimeline.hidden) xSearch.focus();
+      else xTimeline.querySelector("a")?.focus();
+    });
+    actions.append(back);
+  }
+  const external = element("a", "x-link", "Xで開く ↗");
+  openExternal(external, url);
+  actions.append(external);
+  header.append(actions);
+  const host = element("div", "x-widget-host");
+  const message = element("p", "x-widget-status", "Xのタイムラインを読み込んでいます…");
+  message.setAttribute("role", "status");
+  xTimeline.replaceChildren(header, message, host);
+
+  loadXWidgets().then(async (widgets) => {
+    if (!host.isConnected) return;
+    let frame;
+    if (widgets.createTimeline) {
+      const source = account
+        ? { sourceType: "profile", screenName: account.handle.replace(/^@/, "") }
+        : { sourceType: "list", id: new URL(url).pathname.split("/").filter(Boolean).at(-1) };
+      try {
+        frame = await widgets.createTimeline(source, host, { dnt: true, height: 500, lang: "ja" });
+      } catch (error) {
+        if (!widgets.load) throw error;
+      }
+    }
+    if (!host.isConnected) return;
+    if (!frame) {
+      if (!widgets.load) throw new Error("Xのタイムラインを表示できませんでした。");
+      const anchor = element("a", "twitter-timeline", "Xでタイムラインを開く");
+      anchor.href = url.replace(/^https:\/\/x\.com\//, "https://twitter.com/");
+      anchor.dataset.dnt = "true";
+      anchor.dataset.height = "500";
+      anchor.dataset.lang = "ja";
+      host.replaceChildren(anchor);
+      await widgets.load(host);
+    }
+    if (host.isConnected) message.hidden = true;
+  }).catch(() => {
+    if (!host.isConnected) return;
+    host.replaceChildren();
+    message.textContent = "タイムラインを表示できない場合は、Xで開けます。";
+  });
 }
 
 function renderXProfiles(accounts, view) {
@@ -464,60 +593,48 @@ function renderXProfiles(accounts, view) {
   const list = element("div", "x-profile-list");
   const ordered = [...accounts].sort((left, right) => nameOrder.compare(left.name, right.name));
   for (const account of ordered.slice(0, view.limit)) {
-    const link = element("a", "x-profile");
-    openExternal(link, "https://x.com/" + encodeURIComponent(account.handle.replace(/^@/, "")));
-    link.append(renderXIdentity(account), element("span", "x-link", "Xで開く ↗"));
-    list.append(link);
+    const row = element("div", "x-profile");
+    const actions = element("div", "x-timeline-actions");
+    const select = element("button", "button secondary x-small-button", "投稿を表示");
+    select.type = "button";
+    select.setAttribute("aria-label", `${account.name}の投稿を表示`);
+    select.addEventListener("click", () => selectXAccount(account));
+    const link = element("a", "x-link", "プロフィール ↗");
+    openExternal(link, xProfileUrl(account));
+    actions.append(select, link);
+    row.append(renderXIdentity(account), actions);
+    list.append(row);
   }
   profiles.append(element("h3", "", "Xのプロフィール"), list);
-  if (ordered.length > view.limit) profiles.append(renderMore(view, ".x-profile"));
+  if (ordered.length > view.limit) profiles.append(renderMore(view, ".x-profile button", xResults));
   return profiles;
 }
 
-function renderXPosts(date) {
+function renderXView() {
   const view = state.x;
   const { data, error, loading } = view;
+  xListForm.hidden = !data;
+  xPanel.setAttribute("aria-busy", String(loading));
   if (!data) {
-    schedulePanel.replaceChildren(loading
-      ? stateCard("Xの投稿を取得しています", "", { loading: true })
-      : stateCard("Xの投稿を取得できませんでした", error, { action: () => loadXPosts(), actionLabel: "もう一度試す" }));
+    xResults.replaceChildren(loading
+      ? stateCard("Xの登録情報を取得しています", "", { loading: true })
+      : stateCard("Xの登録情報を取得できませんでした", error, { action: loadXRegistration, actionLabel: "もう一度試す" }));
     return;
   }
 
-  const matched = matchingXAccounts(data.accounts);
-  const accounts = new Map(matched.map((account) => [xSearchKey(account.handle), account]));
-  const visible = data.posts.filter((post) => {
-    if (!accounts.has(xSearchKey(post.handle))) return false;
-    const published = validDate(post.createdAt);
-    return !date || (published && jstDateKey(published) === date);
-  });
-  if (data.available && (!data.warning || data.posts.length)) byId("count-x").textContent = visible.length;
+  xListForm.querySelectorAll("input, button").forEach((field) => { field.disabled = loading || view.saving; });
+  xClearList.hidden = !data.listUrl;
+  const accounts = visibleXAccounts(data.accounts);
+  const selected = accounts.find((account) => account.handle === view.selectedHandle);
+  renderXTimeline(selected ? xProfileUrl(selected) : data.listUrl, selected);
 
-  if (visible.length) {
-    const list = element("div", "stream-list");
-    list.append(...visible.slice(0, view.limit).map((post) => renderXPost(post, accounts.get(xSearchKey(post.handle)))));
-    schedulePanel.replaceChildren(list);
-    if (visible.length > view.limit) schedulePanel.append(renderMore(view, ".x-post"));
-    return;
+  xResults.replaceChildren();
+  if (error) xResults.append(element("p", "form-message", error));
+  if ((!data.listUrl && !selected) || xSearchKey(xSearch.value) || xGroup.value) {
+    const matched = matchingXAccounts(accounts);
+    if (matched.length) xResults.append(renderXProfiles(matched, view));
+    else xResults.append(element("p", "x-widget-status", "一致するメンバーが見つかりません。"));
   }
-
-  let card;
-  if (!data.available) {
-    card = stateCard("Xの自動取得は未設定です", "Codespacesのシークレットに X_BEARER_TOKEN を設定すると、公開投稿を取得できます。");
-  } else if (!data.posts.length && (data.warning || error)) {
-    card = stateCard("Xの投稿を取得できませんでした", error);
-  } else if (!matched.length && (xSearch.value || xGroup.value)) {
-    card = stateCard("一致する投稿者が見つかりません", "");
-  } else if (date) {
-    card = stateCard(`${dayLabel(date, archiveDay)}に取得したXの投稿はありません`, "", {
-      action: () => selectDate(""), actionLabel: "全日程を表示",
-    });
-  } else {
-    card = stateCard("表示できるXの投稿はありません", "");
-  }
-
-  schedulePanel.replaceChildren(card);
-  if (matched.length) schedulePanel.append(renderXProfiles(matched, view));
 }
 
 function renderStream(stream, channel, { mv = false, showDay = false, selectedDay, order = "newest" } = {}) {
@@ -616,7 +733,7 @@ function setMusicKind(kind) {
   for (const button of mvKindButtons) button.setAttribute("aria-pressed", String(button.dataset.mvKind === kind));
 }
 
-function renderMore(catalog, itemSelector = ".stream") {
+function renderMore(catalog, itemSelector = ".stream", panel = schedulePanel) {
   const control = element("div", "schedule-more");
   const button = element("button", "button secondary", "さらに表示");
   button.type = "button";
@@ -624,9 +741,9 @@ function renderMore(catalog, itemSelector = ".stream") {
     const previousLimit = catalog.limit;
     catalog.limit += catalogPageSize;
     renderSchedule();
-    const firstNew = schedulePanel.querySelectorAll(itemSelector)[previousLimit];
+    const firstNew = panel.querySelectorAll(itemSelector)[previousLimit];
     if (firstNew) {
-      if (firstNew.tagName !== "A") firstNew.tabIndex = -1;
+      if (firstNew.tagName === "ARTICLE") firstNew.tabIndex = -1;
       firstNew.focus();
     }
   });
@@ -636,37 +753,42 @@ function renderMore(catalog, itemSelector = ".stream") {
 
 function renderSchedule() {
   const { data, loading, error, status } = state;
-  const now = new Date();
   const isX = status === "x";
+  byId("schedule-heading").textContent = isX ? "Xのタイムライン" : "配信一覧";
+  byId("open-archive").hidden = isX;
+  refreshButton.hidden = isX;
+  byId("schedule-date-controls").hidden = isX;
+  byId("schedule-filters").hidden = isX;
+  byId("x-filters").hidden = !isX;
+  schedulePanel.hidden = isX;
+  xPanel.hidden = !isX;
+  if (isX) {
+    byId("sync-status").textContent = "";
+    byId("schedule-alerts").hidden = true;
+    renderXView();
+    return;
+  }
+  clearXTimeline();
+
+  const now = new Date();
   const catalog = catalogTabs[status];
-  const catalogView = isX ? state.x : state.catalogViews[status];
+  const catalogView = state.catalogViews[status];
   const mv = status === "mv";
   const musicKind = mv ? state.mvKind : "";
   const flatMusicList = mv && state.mvOrder !== "newest";
   const scheduleDate = selectedDate(state.dateSelection, now);
   const date = catalogView ? selectedDate(catalogView.dateSelection, now) : scheduleDate;
   mvControls.hidden = !mv;
-  byId("schedule-heading").textContent = isX ? "Xの投稿" : "配信一覧";
-  byId("open-archive").hidden = isX;
-  byId("schedule-filters").hidden = isX;
-  byId("x-filters").hidden = !isX;
   updateDateControls(date, now);
-  const shownView = isX ? state.x : state;
-  const updated = validDate(shownView.data?.updatedAt);
-  byId("sync-status").textContent = shownView.loading
-    ? isX ? "Xの投稿を取得中" : "配信情報を取得中"
-    : updated ? "最終更新 " + clock.format(updated) + " JST" : isX ? "" : "配信情報を取得できませんでした";
-  refreshButton.disabled = shownView.loading;
-  if (shownView.loading) refreshButton.setAttribute("aria-busy", "true");
+  const updated = validDate(data?.updatedAt);
+  byId("sync-status").textContent = loading
+    ? "配信情報を取得中"
+    : updated ? "最終更新 " + clock.format(updated) + " JST" : "配信情報を取得できませんでした";
+  refreshButton.disabled = loading;
+  if (loading) refreshButton.setAttribute("aria-busy", "true");
   else refreshButton.removeAttribute("aria-busy");
-  schedulePanel.setAttribute("aria-busy", String(shownView.loading));
+  schedulePanel.setAttribute("aria-busy", String(loading));
   renderAlerts();
-  const xData = state.x.data;
-  byId("count-x").textContent = xData?.available && (!xData.warning || xData.posts.length) ? xData.posts.length : "—";
-  if (isX) {
-    renderXPosts(date);
-    return;
-  }
 
   if (!data) {
     const subject = catalog?.label ?? "配信情報";
@@ -781,15 +903,17 @@ function renderSchedule() {
 }
 
 function selectTab(tab) {
+  const previousStatus = state.status;
   state.status = tab.dataset.status;
   for (const candidate of tabs) {
     candidate.setAttribute("aria-selected", String(candidate === tab));
     candidate.tabIndex = candidate === tab ? 0 : -1;
   }
-  schedulePanel.setAttribute("aria-labelledby", tab.id);
-  if (state.status === "x" && !state.x.loading && (!state.x.data || Date.now() - state.x.lastCheck >= xPollInterval)) {
-    return loadXPosts();
+  if (state.status === "x") {
+    if (!state.x.loading && !state.x.saving && (previousStatus !== "x" || !state.x.data)) return loadXRegistration();
+    return renderSchedule();
   }
+  schedulePanel.setAttribute("aria-labelledby", tab.id);
   const catalog = catalogTabs[state.status];
   if (catalog && state.loadMode !== state.status && (state.loadMode || !Array.isArray(state.data?.[catalog.items]))) {
     return loadSchedule();
@@ -911,12 +1035,9 @@ async function mutateChannel(channel, method, body, success, focusTarget) {
     updateChannelControls(state.data.channels);
     setMessage(message, success);
     const scheduleLoad = loadSchedule();
-    if (method === "DELETE" || body?.hidden === false) {
-      state.x.lastCheck = 0;
-      if (state.status === "x") {
-        await xRequest;
-        if (state.status === "x") await loadXPosts();
-      }
+    if (state.status === "x" && (method === "DELETE" || body?.hidden === false)) {
+      await xRequest;
+      if (state.status === "x") await loadXRegistration();
     }
     await scheduleLoad;
   } catch (error) {
@@ -1013,10 +1134,7 @@ archiveCsvForm.addEventListener("submit", (event) => {
   if (file) submitArchives(archiveCsvForm, { contentType: "text/csv", body: file });
 });
 
-refreshButton.addEventListener("click", () => {
-  if (state.status === "x") loadXPosts({ refresh: true });
-  else loadSchedule({ refresh: true });
-});
+refreshButton.addEventListener("click", () => loadSchedule({ refresh: true }));
 dateInput.addEventListener("change", () => selectDate(dateInput.value));
 for (const button of dateShortcuts) {
   button.addEventListener("click", () => {
@@ -1032,6 +1150,19 @@ for (const [input, event] of [[xSearch, "input"], [xGroup, "change"]]) {
     renderSchedule();
   });
 }
+xSearch.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.isComposing || !xSearchKey(xSearch.value) || !state.x.data) return;
+  const matched = matchingXAccounts(visibleXAccounts(state.x.data.accounts));
+  if (matched.length === 1) {
+    event.preventDefault();
+    selectXAccount(matched[0]);
+  }
+});
+xListForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  saveXRegistration(xListUrl.value.trim());
+});
+xClearList.addEventListener("click", () => saveXRegistration(null));
 for (const button of mvSortButtons) {
   button.addEventListener("click", () => {
     const order = button.dataset.mvOrder;
@@ -1156,12 +1287,7 @@ function renderAtNextMidnight() {
 loadSchedule();
 renderAtNextMidnight();
 window.setInterval(() => {
-  if (document.hidden || dialog.open || archiveDialog.open) return;
-  if (state.status === "x") {
-    if (state.x.data?.available && Date.now() - state.x.lastCheck >= xPollInterval) loadXPosts();
-  } else if (!state.loading) {
-    loadSchedule();
-  }
+  if (!document.hidden && state.status !== "x" && !state.loading && !dialog.open && !archiveDialog.open) loadSchedule();
 }, 90_000);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) renderSchedule();
