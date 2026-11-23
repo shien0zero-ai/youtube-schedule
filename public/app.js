@@ -41,6 +41,7 @@ const emptyStates = {
 const timeZone = "Asia/Tokyo";
 const dayMilliseconds = 24 * 60 * 60 * 1000;
 const catalogPageSize = 40;
+const xPollInterval = 30 * 60 * 1000;
 const catalogTabs = {
   special: { items: "specialLives", count: "specialLivesCount", label: "3Dライブ" },
   mv: { items: "musicVideos", count: "musicVideosCount", label: "MV" },
@@ -58,6 +59,8 @@ const dateShortcuts = [...document.querySelectorAll("[data-date-offset]")];
 const schedulePanel = byId("schedule-panel");
 const scheduleSearch = byId("schedule-search");
 const scheduleGroup = byId("schedule-group");
+const xSearch = byId("x-search");
+const xGroup = byId("x-group");
 const mvControls = byId("mv-controls");
 const mvSortButtons = [...byId("mv-sort").querySelectorAll("[data-mv-order]")];
 const mvKindButtons = [...byId("mv-kind").querySelectorAll("[data-mv-kind]")];
@@ -92,7 +95,9 @@ const state = {
   loadMode: null,
   loadVersion: 0,
   pendingChannels: new Set(),
+  x: { data: null, error: null, loading: false, lastCheck: 0, dateSelection: "", limit: catalogPageSize },
 };
+let xRequest = null;
 
 function element(tag, className, value) {
   const node = document.createElement(tag);
@@ -224,6 +229,11 @@ function updateDateControls(selected, now) {
 
 function selectDate(date, { now = new Date(), status = state.status } = {}) {
   const selection = date === jstDateKey(now) ? "today" : date;
+  if (status === "x") {
+    state.x.dateSelection = selection;
+    state.x.limit = catalogPageSize;
+    return selectTab(byId("tab-x"));
+  }
   const catalog = state.catalogViews[status];
   if (catalog) {
     catalog.dateSelection = selection;
@@ -292,8 +302,6 @@ async function loadSchedule({ refresh = false } = {}) {
   const query = params.toString();
   state.loading = true;
   state.loadMode = mode;
-  refreshButton.disabled = true;
-  refreshButton.setAttribute("aria-busy", "true");
   renderSchedule();
   try {
     const data = await request(query ? "/api/schedule?" + query : "/api/schedule", { cache: "no-store" });
@@ -311,22 +319,44 @@ async function loadSchedule({ refresh = false } = {}) {
     if (version === state.loadVersion) {
       state.loading = false;
       state.loadMode = null;
-      refreshButton.disabled = false;
-      refreshButton.removeAttribute("aria-busy");
       renderSchedule();
       if (dialog.open && !state.data) renderRoster();
     }
   }
 }
 
+function loadXPosts({ refresh = false } = {}) {
+  if (xRequest) return xRequest;
+  const view = state.x;
+  view.loading = true;
+  view.lastCheck = Date.now();
+  view.error = null;
+  renderSchedule();
+  xRequest = request(refresh ? "/api/x-posts?refresh=1" : "/api/x-posts", { cache: "no-store" })
+    .then((data) => {
+      data.posts.sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
+      view.data = data;
+      setGroups(xGroup, data.accounts);
+    })
+    .catch((error) => { view.error = error.message; })
+    .finally(() => {
+      xRequest = null;
+      view.loading = false;
+      if (state.status === "x") renderSchedule();
+    });
+  return xRequest;
+}
+
 function renderAlerts() {
   const node = byId("schedule-alerts");
-  const messages = [...(state.data?.warnings ?? [])];
+  const isX = state.status === "x";
+  const view = isX ? state.x : state;
+  const messages = isX ? [view.data?.available ? view.data.warning : null] : [...(view.data?.warnings ?? [])];
   if (state.status === "mv") messages.push(state.data?.musicVideosWarning);
   const warnings = [...new Set(messages)].filter(Boolean);
   const catalog = catalogTabs[state.status];
-  const hasContent = state.data && (!catalog || Array.isArray(state.data[catalog.items]));
-  if (state.error && hasContent) warnings.unshift("更新に失敗したため、直前に取得した情報を表示しています。");
+  const hasContent = isX ? view.data?.posts.length : view.data && (!catalog || Array.isArray(view.data[catalog.items]));
+  if (view.error && hasContent) warnings.unshift("更新に失敗したため、直前に取得した情報を表示しています。");
   node.hidden = warnings.length === 0;
   node.replaceChildren();
   if (warnings.length === 1) {
@@ -369,6 +399,125 @@ function media(container, source, fallbackText) {
   image.addEventListener("error", showFallback, { once: true });
   image.src = sourceUrl;
   container.append(image);
+}
+
+function xSearchKey(value) {
+  return searchValue(value).replace(/^@/, "");
+}
+
+function matchingXAccounts(accounts) {
+  const group = xGroup.value;
+  const query = xSearchKey(xSearch.value);
+  const hidden = new Set((state.data?.channels ?? []).filter((channel) => channel.hidden).map(({ id }) => id));
+  const inGroup = accounts.filter((account) => !hidden.has(account.channelId) && (!group || account.group === group));
+  if (!query) return inGroup;
+
+  const exact = [];
+  const partial = [];
+  for (const account of inGroup) {
+    const names = [account.name, account.handle, ...(account.aliases ?? [])].map(xSearchKey);
+    if (names.includes(query)) exact.push(account);
+    else if (names.some((name) => name.includes(query))) partial.push(account);
+  }
+  return exact.length ? exact : partial;
+}
+
+function renderXIdentity(account) {
+  const identity = element("div", "x-identity");
+  const avatar = element("span", "roster-avatar");
+  avatar.setAttribute("aria-hidden", "true");
+  media(avatar, account.avatar, Array.from(account.name || account.handle)[0]);
+  const details = element("div");
+  details.append(
+    element("span", "x-name", account.name),
+    element("span", "x-handle", "@" + account.handle.replace(/^@/, "")),
+  );
+  identity.append(avatar, details);
+  return identity;
+}
+
+function openExternal(link, url) {
+  link.href = url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+}
+
+function renderXPost(post, account) {
+  const url = webUrl(post.url);
+  const card = element(url ? "a" : "article", "x-post");
+  if (url) openExternal(card, url);
+  const header = element("div", "x-post-header");
+  header.append(renderXIdentity(account));
+  const published = validDate(post.createdAt);
+  if (published) {
+    const time = element("time", "", `${archiveDay.format(published)} ${clock.format(published)}`);
+    time.dateTime = published.toISOString();
+    header.append(time);
+  }
+  card.append(header, element("p", "x-post-text", post.text));
+  if (url) card.append(element("span", "x-link", "Xで投稿を開く ↗"));
+  return card;
+}
+
+function renderXProfiles(accounts, view) {
+  const profiles = element("section", "x-profiles");
+  const list = element("div", "x-profile-list");
+  const ordered = [...accounts].sort((left, right) => nameOrder.compare(left.name, right.name));
+  for (const account of ordered.slice(0, view.limit)) {
+    const link = element("a", "x-profile");
+    openExternal(link, "https://x.com/" + encodeURIComponent(account.handle.replace(/^@/, "")));
+    link.append(renderXIdentity(account), element("span", "x-link", "Xで開く ↗"));
+    list.append(link);
+  }
+  profiles.append(element("h3", "", "Xのプロフィール"), list);
+  if (ordered.length > view.limit) profiles.append(renderMore(view, ".x-profile"));
+  return profiles;
+}
+
+function renderXPosts(date) {
+  const view = state.x;
+  const { data, error, loading } = view;
+  if (!data) {
+    schedulePanel.replaceChildren(loading
+      ? stateCard("Xの投稿を取得しています", "", { loading: true })
+      : stateCard("Xの投稿を取得できませんでした", error, { action: () => loadXPosts(), actionLabel: "もう一度試す" }));
+    return;
+  }
+
+  const matched = matchingXAccounts(data.accounts);
+  const accounts = new Map(matched.map((account) => [xSearchKey(account.handle), account]));
+  const visible = data.posts.filter((post) => {
+    if (!accounts.has(xSearchKey(post.handle))) return false;
+    const published = validDate(post.createdAt);
+    return !date || (published && jstDateKey(published) === date);
+  });
+  if (data.available && (!data.warning || data.posts.length)) byId("count-x").textContent = visible.length;
+
+  if (visible.length) {
+    const list = element("div", "stream-list");
+    list.append(...visible.slice(0, view.limit).map((post) => renderXPost(post, accounts.get(xSearchKey(post.handle)))));
+    schedulePanel.replaceChildren(list);
+    if (visible.length > view.limit) schedulePanel.append(renderMore(view, ".x-post"));
+    return;
+  }
+
+  let card;
+  if (!data.available) {
+    card = stateCard("Xの自動取得は未設定です", "Codespacesのシークレットに X_BEARER_TOKEN を設定すると、公開投稿を取得できます。");
+  } else if (!data.posts.length && (data.warning || error)) {
+    card = stateCard("Xの投稿を取得できませんでした", error);
+  } else if (!matched.length && (xSearch.value || xGroup.value)) {
+    card = stateCard("一致する投稿者が見つかりません", "");
+  } else if (date) {
+    card = stateCard(`${dayLabel(date, archiveDay)}に取得したXの投稿はありません`, "", {
+      action: () => selectDate(""), actionLabel: "全日程を表示",
+    });
+  } else {
+    card = stateCard("表示できるXの投稿はありません", "");
+  }
+
+  schedulePanel.replaceChildren(card);
+  if (matched.length) schedulePanel.append(renderXProfiles(matched, view));
 }
 
 function renderStream(stream, channel, { mv = false, showDay = false, selectedDay, order = "newest" } = {}) {
@@ -467,7 +616,7 @@ function setMusicKind(kind) {
   for (const button of mvKindButtons) button.setAttribute("aria-pressed", String(button.dataset.mvKind === kind));
 }
 
-function renderMore(catalog) {
+function renderMore(catalog, itemSelector = ".stream") {
   const control = element("div", "schedule-more");
   const button = element("button", "button secondary", "さらに表示");
   button.type = "button";
@@ -475,7 +624,7 @@ function renderMore(catalog) {
     const previousLimit = catalog.limit;
     catalog.limit += catalogPageSize;
     renderSchedule();
-    const firstNew = schedulePanel.querySelectorAll(".stream")[previousLimit];
+    const firstNew = schedulePanel.querySelectorAll(itemSelector)[previousLimit];
     if (firstNew) {
       if (firstNew.tagName !== "A") firstNew.tabIndex = -1;
       firstNew.focus();
@@ -488,21 +637,36 @@ function renderMore(catalog) {
 function renderSchedule() {
   const { data, loading, error, status } = state;
   const now = new Date();
+  const isX = status === "x";
   const catalog = catalogTabs[status];
-  const catalogView = state.catalogViews[status];
+  const catalogView = isX ? state.x : state.catalogViews[status];
   const mv = status === "mv";
   const musicKind = mv ? state.mvKind : "";
   const flatMusicList = mv && state.mvOrder !== "newest";
   const scheduleDate = selectedDate(state.dateSelection, now);
   const date = catalogView ? selectedDate(catalogView.dateSelection, now) : scheduleDate;
   mvControls.hidden = !mv;
+  byId("schedule-heading").textContent = isX ? "Xの投稿" : "配信一覧";
+  byId("open-archive").hidden = isX;
+  byId("schedule-filters").hidden = isX;
+  byId("x-filters").hidden = !isX;
   updateDateControls(date, now);
-  const updated = validDate(data?.updatedAt);
-  byId("sync-status").textContent = loading
-    ? "配信情報を取得中"
-    : updated ? "最終更新 " + clock.format(updated) + " JST" : "配信情報を取得できませんでした";
-  schedulePanel.setAttribute("aria-busy", String(loading));
+  const shownView = isX ? state.x : state;
+  const updated = validDate(shownView.data?.updatedAt);
+  byId("sync-status").textContent = shownView.loading
+    ? isX ? "Xの投稿を取得中" : "配信情報を取得中"
+    : updated ? "最終更新 " + clock.format(updated) + " JST" : isX ? "" : "配信情報を取得できませんでした";
+  refreshButton.disabled = shownView.loading;
+  if (shownView.loading) refreshButton.setAttribute("aria-busy", "true");
+  else refreshButton.removeAttribute("aria-busy");
+  schedulePanel.setAttribute("aria-busy", String(shownView.loading));
   renderAlerts();
+  const xData = state.x.data;
+  byId("count-x").textContent = xData?.available && (!xData.warning || xData.posts.length) ? xData.posts.length : "—";
+  if (isX) {
+    renderXPosts(date);
+    return;
+  }
 
   if (!data) {
     const subject = catalog?.label ?? "配信情報";
@@ -623,6 +787,9 @@ function selectTab(tab) {
     candidate.tabIndex = candidate === tab ? 0 : -1;
   }
   schedulePanel.setAttribute("aria-labelledby", tab.id);
+  if (state.status === "x" && !state.x.loading && (!state.x.data || Date.now() - state.x.lastCheck >= xPollInterval)) {
+    return loadXPosts();
+  }
   const catalog = catalogTabs[state.status];
   if (catalog && state.loadMode !== state.status && (state.loadMode || !Array.isArray(state.data?.[catalog.items]))) {
     return loadSchedule();
@@ -743,7 +910,15 @@ async function mutateChannel(channel, method, body, success, focusTarget) {
     }
     updateChannelControls(state.data.channels);
     setMessage(message, success);
-    await loadSchedule();
+    const scheduleLoad = loadSchedule();
+    if (method === "DELETE" || body?.hidden === false) {
+      state.x.lastCheck = 0;
+      if (state.status === "x") {
+        await xRequest;
+        if (state.status === "x") await loadXPosts();
+      }
+    }
+    await scheduleLoad;
   } catch (error) {
     setMessage(message, error.message, "error");
   } finally {
@@ -838,7 +1013,10 @@ archiveCsvForm.addEventListener("submit", (event) => {
   if (file) submitArchives(archiveCsvForm, { contentType: "text/csv", body: file });
 });
 
-refreshButton.addEventListener("click", () => loadSchedule({ refresh: true }));
+refreshButton.addEventListener("click", () => {
+  if (state.status === "x") loadXPosts({ refresh: true });
+  else loadSchedule({ refresh: true });
+});
 dateInput.addEventListener("change", () => selectDate(dateInput.value));
 for (const button of dateShortcuts) {
   button.addEventListener("click", () => {
@@ -848,6 +1026,12 @@ for (const button of dateShortcuts) {
 }
 scheduleSearch.addEventListener("input", renderAfterFilterChange);
 scheduleGroup.addEventListener("change", renderAfterFilterChange);
+for (const [input, event] of [[xSearch, "input"], [xGroup, "change"]]) {
+  input.addEventListener(event, () => {
+    state.x.limit = catalogPageSize;
+    renderSchedule();
+  });
+}
 for (const button of mvSortButtons) {
   button.addEventListener("click", () => {
     const order = button.dataset.mvOrder;
@@ -972,7 +1156,12 @@ function renderAtNextMidnight() {
 loadSchedule();
 renderAtNextMidnight();
 window.setInterval(() => {
-  if (!document.hidden && !state.loading && !dialog.open && !archiveDialog.open) loadSchedule();
+  if (document.hidden || dialog.open || archiveDialog.open) return;
+  if (state.status === "x") {
+    if (state.x.data?.available && Date.now() - state.x.lastCheck >= xPollInterval) loadXPosts();
+  } else if (!state.loading) {
+    loadSchedule();
+  }
 }, 90_000);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) renderSchedule();

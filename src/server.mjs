@@ -9,6 +9,8 @@ import { getMusicVideos, getRecentMusicVideos } from './music-video-youtube.mjs'
 import { getYouTubeChannel, getYouTubeTitles, getYouTubeVideos, normalizeChannelUrl } from './youtube.mjs';
 import { createScheduleService, REFRESH_INTERVAL } from './schedule.mjs';
 import { ScheduleError } from './schedule-error.mjs';
+import { createXFeed } from './x-feed.mjs';
+import { getXPosts } from './x-posts.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const defaultDataFile = fileURLToPath(new URL('../.data/schedule.json', import.meta.url));
@@ -76,10 +78,12 @@ async function serveAsset(request, response, pathname) {
 export function createApp({
   file = defaultDataFile,
   providers = { getHololive, getYouTubeChannel, getYouTubeTitles, getYouTubeVideos, normalizeChannelUrl, getRecentMusicVideos,
-    getMusicVideos: process.env.YOUTUBE_API_KEY ? getMusicVideos : undefined },
+    getMusicVideos: process.env.YOUTUBE_API_KEY ? getMusicVideos : undefined,
+    getXPosts: process.env.X_BEARER_TOKEN?.trim() ? getXPosts : undefined },
   now,
 } = {}) {
   const schedule = createScheduleService({ file, ...providers, now });
+  const xFeed = createXFeed({ getPosts: providers.getXPosts, now });
   function refreshMusicVideos() {
     schedule.refreshMusicVideos().catch((error) => console.error('MV refresh failed:', error.message));
   }
@@ -91,6 +95,10 @@ export function createApp({
         await schedule.refresh(url.searchParams.get('refresh') === '1');
         if (includeMusicVideos) refreshMusicVideos();
         return json(response, 200, schedule.snapshot({ includeSpecialLives: url.searchParams.get('special') !== '0', includeMusicVideos }));
+      }
+
+      if (request.method === 'GET' && url.pathname === '/api/x-posts') {
+        return json(response, 200, await xFeed.load(schedule.hiddenChannelIds()));
       }
 
       if (request.method === 'POST' && url.pathname === '/api/channels') {

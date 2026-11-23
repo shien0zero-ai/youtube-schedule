@@ -459,7 +459,10 @@ export function createScheduleService({
     save({ ...state, hidden: state.hidden.filter((hiddenId) => hiddenId !== id) });
   }
 
-  return { refresh, refreshMusicVideos: music.refresh, snapshot, addArchives, addChannel, setKeepPast, removeChannel, restoreChannel };
+  return {
+    refresh, refreshMusicVideos: music.refresh, snapshot, addArchives, addChannel, setKeepPast, removeChannel, restoreChannel,
+    hiddenChannelIds: () => new Set(state.hidden),
+  };
 }
 
 export { REFRESH_INTERVAL, ScheduleError };
