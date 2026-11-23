@@ -144,8 +144,24 @@ function searchValue(value) {
     .replace(/[\s・'’]+/g, "");
 }
 
-function matchesChannelName(channel, query) {
-  return [channel.name, ...(channel.aliases ?? [])].some((name) => searchValue(name).includes(query));
+function nameSearchKey(value) {
+  return searchValue(value).replace(/[^\p{L}\p{M}\p{N}]+/gu, "");
+}
+
+function nameSearch(value) {
+  return {
+    key: nameSearchKey(value),
+    words: value.normalize("NFKC").split(/[\s・]+/u).map(nameSearchKey).filter(Boolean),
+  };
+}
+
+function channelNameKeys({ name, handle, aliases = [] }) {
+  return [name, handle, ...aliases].map(nameSearchKey);
+}
+
+function matchesNameKeys(keys, { key, words }) {
+  return Boolean(key) && (keys.some((name) => name.includes(key)) ||
+    (words.length > 1 && words.every((word) => keys.some((name) => name.includes(word)))));
 }
 
 function streamTitle({ title, holoduleTitle }) {
@@ -276,9 +292,9 @@ function setGroups(select, channels) {
   if (groups.includes(selected)) select.value = selected;
 }
 
-function updateChannelControls(channels) {
+function updateChannelControls(channels, catalogChannels = []) {
   const visible = channels.filter((channel) => !channel.hidden);
-  setGroups(scheduleGroup, visible);
+  setGroups(scheduleGroup, [...visible, ...catalogChannels]);
   setGroups(rosterGroup, channels);
   byId("channel-count").textContent = visible.length.toLocaleString("ja-JP");
   updateArchiveChannels(channels);
@@ -313,7 +329,7 @@ async function loadSchedule({ refresh = false } = {}) {
     }
     state.data = data;
     state.error = null;
-    updateChannelControls(data.channels);
+    updateChannelControls(data.channels, data.catalogChannels);
     if (dialog.open) renderRoster();
   } catch (error) {
     if (version === state.loadVersion) state.error = error.message;
@@ -428,10 +444,6 @@ function media(container, source, fallbackText) {
   container.append(image);
 }
 
-function xSearchKey(value) {
-  return searchValue(value).replace(/[^\p{L}\p{M}\p{N}]+/gu, "");
-}
-
 function visibleXAccounts(accounts) {
   const hidden = new Set((state.data?.channels ?? []).filter((channel) => channel.hidden).map(({ id }) => id));
   return accounts.filter((account) => !hidden.has(account.channelId));
@@ -439,18 +451,16 @@ function visibleXAccounts(accounts) {
 
 function matchingXAccounts(accounts) {
   const group = xGroup.value;
-  const query = xSearchKey(xSearch.value);
+  const query = nameSearch(xSearch.value);
   const inGroup = group ? accounts.filter((account) => account.group === group) : accounts;
-  if (!query) return inGroup;
-  const words = xSearch.value.normalize("NFKC").split(/[\s・]+/u).map(xSearchKey).filter(Boolean);
+  if (!query.key) return inGroup;
 
   const exact = [];
   const partial = [];
   for (const account of inGroup) {
-    const names = [account.name, account.handle, ...(account.aliases ?? [])].map(xSearchKey);
-    if (names.includes(query)) exact.push(account);
-    else if (names.some((name) => name.includes(query)) ||
-      (words.length > 1 && words.every((word) => names.some((name) => name.includes(word))))) partial.push(account);
+    const names = channelNameKeys(account);
+    if (names.includes(query.key)) exact.push(account);
+    else if (matchesNameKeys(names, query)) partial.push(account);
   }
   return exact.length ? exact : partial;
 }
@@ -630,7 +640,7 @@ function renderXView() {
 
   xResults.replaceChildren();
   if (error) xResults.append(element("p", "form-message", error));
-  if ((!data.listUrl && !selected) || xSearchKey(xSearch.value) || xGroup.value) {
+  if ((!data.listUrl && !selected) || nameSearchKey(xSearch.value) || xGroup.value) {
     const matched = matchingXAccounts(accounts);
     if (matched.length) xResults.append(renderXProfiles(matched, view));
     else xResults.append(element("p", "x-widget-status", "一致するメンバーが見つかりません。"));
@@ -805,16 +815,22 @@ function renderSchedule() {
 
   const groups = scheduleGroup.value;
   const query = searchValue(scheduleSearch.value);
-  const channels = new Map(data.channels.map((channel) => [channel.id, channel]));
-  const matchingChannels = query ? new Set(data.channels.filter((channel) => matchesChannelName(channel, query)).map(({ id }) => id)) : null;
+  const talentQuery = nameSearch(scheduleSearch.value);
+  const channels = new Map([...(data.catalogChannels ?? []), ...data.channels].map((channel) => [channel.id, channel]));
+  const matchingChannels = new Set();
+  if (talentQuery.key) {
+    for (const channel of channels.values()) {
+      if (matchesNameKeys(channelNameKeys(channel), talentQuery)) matchingChannels.add(channel.id);
+    }
+  }
   const matchesFilters = (stream) => {
     const channel = channels.get(stream.channelId);
     if (channel?.hidden) return false;
     if (groups && groups !== (channel?.group ?? stream.channelGroup)) return false;
-    return !query || matchingChannels.has(stream.channelId) || searchValue(stream.title).includes(query) ||
+    return !query || matchingChannels.has(stream.channelId) || matchingChannels.has(stream.uploaderChannelId) ||
+      searchValue(stream.title).includes(query) ||
       (stream.holoduleTitle && searchValue(stream.holoduleTitle).includes(query)) ||
-      (!channel && searchValue(stream.channelName).includes(query)) ||
-      (stream.memberReading && searchValue(stream.memberReading).includes(query));
+      matchesNameKeys([nameSearchKey(stream.channelName), nameSearchKey(stream.memberReading)], talentQuery);
   };
   const matches = data.streams.filter((stream) => streamMatchesDate(stream, scheduleDate, now) && matchesFilters(stream));
   const matchingCatalog = catalog ? data[catalog.items]?.filter((stream) => (
@@ -977,7 +993,7 @@ function rosterRow(channel) {
 
 function renderRoster(focusAfter) {
   const list = byId("roster-list");
-  const query = searchValue(rosterSearch.value);
+  const query = nameSearch(rosterSearch.value);
   const group = rosterGroup.value;
   const current = document.activeElement?.dataset;
   const focus = focusAfter ?? (current?.toggle ? ["toggle", current.toggle] : current?.action ? ["action", current.action] : null);
@@ -985,7 +1001,7 @@ function renderRoster(focusAfter) {
     if (group && channel.group !== group) return false;
     if (retainedFilter.checked && !channel.keepPast) return false;
     if (hiddenFilter.checked && !channel.hidden) return false;
-    return !query || matchesChannelName(channel, query);
+    return !query.key || matchesNameKeys(channelNameKeys(channel), query);
   });
   list.replaceChildren();
   if (channels.length) {
@@ -1032,7 +1048,7 @@ async function mutateChannel(channel, method, body, success, focusTarget) {
     } else if (current) {
       Object.assign(current, body);
     }
-    updateChannelControls(state.data.channels);
+    updateChannelControls(state.data.channels, state.data.catalogChannels);
     setMessage(message, success);
     const scheduleLoad = loadSchedule();
     if (state.status === "x" && (method === "DELETE" || body?.hidden === false)) {
@@ -1151,7 +1167,7 @@ for (const [input, event] of [[xSearch, "input"], [xGroup, "change"]]) {
   });
 }
 xSearch.addEventListener("keydown", (event) => {
-  if (event.key !== "Enter" || event.isComposing || !xSearchKey(xSearch.value) || !state.x.data) return;
+  if (event.key !== "Enter" || event.isComposing || !nameSearchKey(xSearch.value) || !state.x.data) return;
   const matched = matchingXAccounts(visibleXAccounts(state.x.data.accounts));
   if (matched.length === 1) {
     event.preventDefault();

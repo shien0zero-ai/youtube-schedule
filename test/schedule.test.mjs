@@ -121,7 +121,7 @@ test('schedule keeps cached data and displays warnings during an upstream failur
   assert.equal(cached.updatedAt, initial.updatedAt);
 });
 
-test('includes Japanese search aliases for existing EN and ID channels without a source refresh', async (t) => {
+test('includes nicknames and readings for cached channels and catalog-only talent', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'youtube-schedule-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, 'schedule.json');
@@ -129,13 +129,30 @@ test('includes Japanese search aliases for existing EN and ID channels without a
     roster: [
       { id: 'UCHsx4Hqa-1ORjQTh9TYDhww', name: 'Takanashi Kiara', group: 'ホロライブ EN' },
       { id: 'UCP0BspO_AMEe3aQqqpo89Dg', name: 'Moona Hoshinova', group: 'ホロライブ ID' },
+      { id: 'UC1DCedRgGHBdm81E1llLhOQ', name: 'Pekora Ch.', group: 'ホロライブ JP', aliases: ['以前の別名'] },
     ],
     custom: [], preferences: {}, streams: [],
   }));
   const request = await startApp(t, { file, providers: { getHololive: async () => null } });
-  const { channels } = await (await request('/api/schedule?special=0')).json();
+  const compact = await (await request('/api/schedule?special=0')).json();
+  const { channels } = compact;
   assert.ok(channels[0].aliases.includes('タカナシキアラ'));
   assert.ok(channels[1].aliases.includes('ムーナ・ホシノヴァ'));
+  for (const alias of ['兎田ぺこら', 'うさだぺこら', 'ぺこーら', '以前の別名']) {
+    assert.ok(channels[2].aliases.includes(alias));
+  }
+  assert.equal(compact.catalogChannels, undefined);
+
+  const full = await (await request('/api/schedule?mv=1')).json();
+  const suiseiId = 'UC5CwaMl1eIgY8h02uZw7u8A';
+  assert.deepEqual(full.channels, channels);
+  assert.ok(full.specialLives.some(({ channelId }) => channelId === suiseiId));
+  assert.ok(full.musicVideos.some(({ channelId }) => channelId === suiseiId));
+  const suisei = full.catalogChannels.find(({ id }) => id === suiseiId);
+  assert.equal(suisei.name, '星街すいせい');
+  assert.ok(suisei.aliases.includes('すいちゃん'));
+  assert.ok(suisei.aliases.includes('ほしまちすいせい'));
+  assert.equal(full.catalogChannels.filter(({ id }) => id === suiseiId).length, 1);
 });
 
 test('shows listed older Hololive cards and preserves a saved opt-out after listings change', async (t) => {

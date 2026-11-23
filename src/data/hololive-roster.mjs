@@ -92,3 +92,43 @@ export const rosterGroups = {
     ["UCGzTVXqMQHa4AgJVJIVvtDQ","綺々羅々ヴィヴィ",["Kikirara Vivi","Vivi","ヴィヴィ"],"https://hololive.hololivepro.com/wp-content/uploads/2023/09/Kikirara-Vivi_list_thumb.png"],
   ],
 };
+
+// Search aliases for common nicknames and their readings.
+export const hololiveNicknameAliases = new Map([
+  // ホロライブ JP
+  ['UC0TXe_LYZ4scaW2XMyi5_kw', ['あずきち']],
+  ['UCdn5BQ06XqgXoAxIhbqw5Rg', ['フブちゃん']],
+  ['UC7fk0CB07ly8oSl0aqKkqFg', ['おじょう']],
+  ['UC1suqwovbL1kzsoaZgFZLKg', ['ちょこせん', 'ちょこせんせい']],
+  ['UCvzGlP9oQwU--Y0r9id_jnA', ['しゅば', 'スバちゃん']],
+  ['UC1DCedRgGHBdm81E1llLhOQ', ['ぺこちゃん', 'ぺこーら']],
+  ['UCdyqAaZDKHXg4Ahi7VENThQ', ['だんちょう', 'ノエル団長']],
+  ['UCCzUftO8KOVkV4wQG1vkUvg', ['せんちょう', 'マリン船長']],
+  ['UCqm3BQLlJfvkTsX_hvm0UmA', ['わためぇ']],
+  ['UC1uv2Oq6kNxgATlCiez59hw', ['トワさま']],
+  ['UCa9Y57gfeY0Zro_noHRVrnw', ['ルーナひめ']],
+  ['UCENwRMx5Yh42zWpzURebzTw', ['ラプさま', '総帥']],
+  ['UCs9_O1tRPMQTHQ-N_L6FU2g', ['ルイねえ']],
+  ['UC_vMYWcDjmfdpH6r4TTn1MQ', ['ござるさん']],
+
+  // ホロライブ ID
+  ['UCTvHWSfBZgtxE4sILOaurIQ', ['ゼータちゃん']],
+  ['UCjLEmnpCNeisMxy134KPwWw', ['こぼちゃん']],
+
+  // ホロライブ EN
+  ['UCL_qhgtOy0dy1Agp8vkySQg', ['カリちゃん']],
+  ['UCHsx4Hqa-1ORjQTh9TYDhww', ['キワワ']],
+  ['UCMwGHR0BTZuLsmjY_NT5Pwg', ['イナちゃん', 'イナニス']],
+  ['UCgmPnx-EEeOrZSg5Tiw7ZRQ', ['ベーちゃん']],
+  ['UCgnfPPb9JI3e9A4cXHnWbyg', ['Shiorin', 'シオリン']],
+  ['UC9p_lqQ0FEDz327Vgf5JwqA', ['ビブー']],
+  ['UCW5uhrG1eCBYditmhL0Ykjw', ['リズ']],
+
+  // hololive DEV_IS
+  ['UCWQtYtq9EOB4-I5P-3fh8lA', ['奏ちゃん', 'かなでちゃん']],
+  ['UCtyWhCj3AqKh2dXctLkDtng', ['莉々華社長', 'りりか社長']],
+  ['UCdXAk5MpyLD8594lm_OvtGQ', ['らでんちゃん']],
+  ['UC1iA6_NT4mtAcIII6ygrvCw', ['ばんちょう', 'はじめ番長']],
+  ['UCuI_opAVX6qbxZY-a-AxFuQ', ['ニコたん']],
+  ['UCjk2nKmHzgH5Xy-C5qYRd5A', ['すうちゃん']],
+]);

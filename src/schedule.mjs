@@ -2,7 +2,8 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { prepareArchives } from './archives.mjs';
 import { isNonBroadcast, knownTitle } from './broadcasts.mjs';
-import { rosterGroups } from './data/hololive-roster.mjs';
+import { hololiveGroupChannels, hololiveNicknameAliases, rosterGroups } from './data/hololive-roster.mjs';
+import { musicVideoMemberReadings } from './data/music-video-member-readings.mjs';
 import { holoduleBroadcast } from './hololive.mjs';
 import { createMusicVideoCatalog } from './music-videos.mjs';
 import { ScheduleError } from './schedule-error.mjs';
@@ -19,7 +20,15 @@ const ARCHIVE_RETRY_INTERVAL = 6 * 60 * 60 * 1000;
 const TITLE_LOOKUP_LIMIT = 12;
 const TITLE_RETRY_INTERVAL = 6 * 60 * 1000;
 const titlePriority = { live: 0, upcoming: 1, past: 2 };
-const aliasesByChannel = new Map(Object.values(rosterGroups).flat().map(([id, , aliases]) => [id, aliases]));
+const officialSearchChannels = new Map([
+  ...Object.entries(rosterGroups).flatMap(([group, members]) => members.map(([id, name, aliases]) => [id, {
+    id, name, group,
+    aliases: [...new Set([name, ...aliases, ...(hololiveNicknameAliases.get(id) ?? []), musicVideoMemberReadings.get(id)].filter(Boolean))],
+  }])),
+  ...[...hololiveGroupChannels].map(([id, { channelName, channelGroup }]) => [id, {
+    id, name: channelName, group: channelGroup, aliases: [musicVideoMemberReadings.get(id)].filter(Boolean),
+  }]),
+]);
 
 function readState(path) {
   try {
@@ -318,13 +327,18 @@ export function createScheduleService({
     return [
       ...roster.map((channel) => ({ ...channel, custom: false })),
       ...state.custom.map((channel) => ({ ...channel, custom: true })),
-    ].map((channel) => ({
-      ...channel,
-      keepPast: state.preferences[channel.id] !== false,
-      hidden: state.hidden.includes(channel.id),
-      specialLiveEligible: specialLiveChannelIds.has(channel.id),
-      aliases: aliasesByChannel.get(channel.id),
-    }));
+    ].map((channel) => {
+      const officialAliases = officialSearchChannels.get(channel.id)?.aliases;
+      return {
+        ...channel,
+        keepPast: state.preferences[channel.id] !== false,
+        hidden: state.hidden.includes(channel.id),
+        specialLiveEligible: specialLiveChannelIds.has(channel.id),
+        aliases: Array.isArray(channel.aliases)
+          ? [...new Set([...channel.aliases, ...(officialAliases ?? [])])]
+          : officialAliases,
+      };
+    });
   }
 
   function snapshot({ includeSpecialLives = true, includeMusicVideos = false } = {}) {
@@ -346,14 +360,19 @@ export function createScheduleService({
       specialLivesCount++;
       visibleSpecialLives?.push(visible);
     }
+    const musicVideos = music.snapshot(hiddenIds, includeMusicVideos);
+    const catalogChannelIds = new Set([...(visibleSpecialLives ?? []), ...(musicVideos.musicVideos ?? [])].map(({ channelId }) => channelId));
+    for (const { id } of channels) catalogChannelIds.delete(id);
+    const catalogChannels = [...catalogChannelIds].map((id) => officialSearchChannels.get(id)).filter(Boolean);
 
     return {
       channels,
+      ...(catalogChannels.length ? { catalogChannels } : {}),
       streams: streams.filter((stream) => !isNonBroadcast(stream) && (stream.isBroadcast === true || stream.manualArchive))
         .map((stream) => displayStream(stream, time)).filter(Boolean),
       specialLivesCount,
       ...(visibleSpecialLives ? { specialLives: visibleSpecialLives } : {}),
-      ...music.snapshot(hiddenIds, includeMusicVideos),
+      ...musicVideos,
       warnings,
       updatedAt: state.updatedAt ?? null,
     };
