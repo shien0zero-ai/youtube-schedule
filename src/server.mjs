@@ -86,6 +86,10 @@ export function createApp({
   const server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url, 'http://localhost');
+      if (request.method === 'GET' && url.pathname === '/healthz') {
+        return json(response, 200, { app: 'haishin-biyori', codespace: process.env.CODESPACE_NAME || null });
+      }
+
       if (request.method === 'GET' && url.pathname === '/api/schedule') {
         const includeMusicVideos = url.searchParams.get('mv') === '1';
         await schedule.refresh(url.searchParams.get('refresh') === '1');

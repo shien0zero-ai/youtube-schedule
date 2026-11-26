@@ -6,7 +6,30 @@
 
 ### GitHub Codespaces
 
-GitHub の **Code → Codespaces** から Codespace を開くと、アプリが自動で起動します。**Ports → 配信日和（3000）→ Open in Browser** で現在のアプリのURLを開けます。お気に入りや起動用HTMLから開けない場合は、同じ Codespace を再開し、Ports に表示された現在のURLを開いてください。既存の Codespace で初めて自動起動の設定を取り込んだ場合は、**Codespaces: Rebuild Container** を一度実行します。
+#### Mac・Windows で「配信日和を開く」
+
+最初の一度だけ、次の準備をします。
+
+1. 手元のパソコンに Node.js 24.5 以降、GitHub CLI (`gh`)、OpenSSH クライアントを用意し、このリポジトリをクローンします。[GitHub CLI のインストール](https://github.com/cli/cli#installation)
+2. 手元で `gh auth login --hostname github.com --web --scopes codespace` を実行し、Codespace の所有アカウントで認証します。すでに認証済みなら `gh auth refresh --hostname github.com --scopes codespace` で権限を追加できます。認証情報は GitHub CLI が管理します。
+3. 既存の Codespace 側にも最新のコードを取り込み、SSH 機能を有効にするため **Codespaces: Rebuild Container** を一度実行します。使っている Codespace の作業フォルダと配信日和の保存ファイルをそのまま使います。
+
+以降は、手元のリポジトリ内にある **`配信日和を開く.command`**（Mac）または **`配信日和を開く.cmd`**（Windows）をダブルクリックします。ターミナルに起動状況が表示され、配信日和の応答を確認してから既定のブラウザが開きます。使っている間はターミナルを開いておきます。開いたままもう一度起動すると、その接続を使ってブラウザを開きます。
+
+同じリポジトリに Codespace が複数ある場合や手元のポート 3000 が使用中の場合は、手元のリポジトリ直下に `.haishin-launch.json` を作れます。次の `codespace` には GitHub に表示される既存の Codespace の名前を指定します。`port` は省略できます。
+
+```json
+{
+  "codespace": "your-codespace-name",
+  "port": 3001
+}
+```
+
+ターミナルからは `npm run codespaces:open` でも実行でき、必要に応じて `-- --codespace 名前 --port 3001` を付けられます。接続は手元のループバックアドレスに限られ、GitHub 側のポート公開設定は使いません。Codespaces の稼働時間と保存容量には通常の無料枠や予算設定が適用されます。[Codespaces の無料枠](https://docs.github.com/ja/codespaces/troubleshooting/troubleshooting-included-usage)
+
+#### ブラウザ・スマートフォン
+
+配信日和の画面下の「起動用 HTML をダウンロード」から、使用中の Codespace 専用の起動ファイルを保存できます。ファイル内の「配信日和を開く」で GitHub の起動画面へ進みます。サインインや再開の確認が出たら GitHub の画面で操作します。Codespace の起動時にサーバーが自動で立ち上がり、ポート自動転送時に配信日和をブラウザで開く設定です。アプリのタブが開かない場合は「アプリを直接開く」か、Codespaces の **Ports → 配信日和（3000）→ Open in Browser** を使います。対応ブラウザから `https://CODESPACE-NAME.github.dev/` をブックマークして開くこともできます。[GitHub の再開手順](https://docs.github.com/ja/codespaces/developing-in-a-codespace/opening-an-existing-codespace)
 
 ### Windows・macOS・Linux
 
@@ -22,7 +45,7 @@ npm run open
 
 ## 使い方
 
-- アプリをすぐ開くには、表示中のページをブラウザのお気に入りに登録するか、画面下の「起動用 HTML をダウンロード」で `youtube-schedule.html` を保存してください。保存したファイルを開くと、そのとき使っていたアプリのURLに移動します。Codespace が停止している場合は、同じ Codespace を再開してから開いてください。
+- アプリをすぐ開くには、画面下の「起動用 HTML をダウンロード」から起動ファイルを保存できます。Codespaces で使う場合と、手元で起動したアプリで使う場合の手順は上の「起動」を参照してください。
 - 右上で「昨日」「今日」「明日」またはカレンダーから日付を選ぶと、その日の配信を日本時間で表示します。日付をまたぐライブは、配信中の各日と、終了時刻を確認できた範囲の日に表示します。「全日程」では配信を開始日ごとに一覧できます。
 - 配信一覧、3Dライブ、MVの検索欄では、タイトルやチャンネル名のほか、`すいちゃん`、`ぺこーら`、`せんちょう` などの愛称やタレント名の読みでも検索できます。
 - 通常のスケジュールにはライブ配信とそのアーカイブを表示します。YouTube の情報で配信かどうかを確認し、ショートや通常投稿を除外します。ページを開くと未取得のタイトルを YouTube で調べ、「更新」を押すと前回取得できなかったタイトルを再試行します。

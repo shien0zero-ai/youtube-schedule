@@ -6,6 +6,7 @@
   "engines": { "node": ">=24.5" },
   "scripts": {
     "open": "node --use-env-proxy src/server.mjs --open",
+    "codespaces:open": "node scripts/open-codespace.mjs",
     "start": "node --use-env-proxy src/server.mjs",
     "test": "node --test"
   }

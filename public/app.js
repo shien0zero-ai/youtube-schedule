@@ -1201,7 +1201,24 @@ rosterGroup.addEventListener("change", () => renderRoster());
 retainedFilter.addEventListener("change", () => renderRoster());
 hiddenFilter.addEventListener("change", () => renderRoster());
 
-function addCodespacesHelp(launcher, appUrl) {
+async function launcherCodespace(appUrl) {
+  const forwarded = /^([a-z0-9-]+)-\d+\.app\.github\.dev$/.exec(appUrl.hostname);
+  if (forwarded) return { name: forwarded[1], appUrl };
+  if (!["localhost", "127.0.0.1", "[::1]"].includes(appUrl.hostname)) return null;
+
+  try {
+    const health = await request("/healthz", { cache: "no-store", signal: AbortSignal.timeout(1500) });
+    const name = health?.codespace;
+    if (health?.app === "haishin-biyori" && typeof name === "string" && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) {
+      return { name, appUrl: new URL(`https://${name}-3000.app.github.dev/`) };
+    }
+  } catch {
+    // A local server can still be opened if its health endpoint is unavailable.
+  }
+  return null;
+}
+
+function addCodespacesHelp(launcher, { name, appUrl }) {
   const style = launcher.createElement("style");
   style.textContent = `
     body { margin: 0; padding: 2rem 1.2rem; background: #f8f8f2; color: #202a25; font: 16px/1.7 system-ui, sans-serif; }
@@ -1215,19 +1232,19 @@ function addCodespacesHelp(launcher, appUrl) {
   launcher.body.innerHTML = `
     <main>
       <h1>配信日和</h1>
-      <p><a id="open-schedule" target="_blank" rel="noopener noreferrer">配信日和を開く</a></p>
-      <p>開けない場合は <a href="https://github.com/codespaces" target="_blank" rel="noopener noreferrer">GitHub Codespaces</a> から使っていた Codespace を再開し、アプリを起動してからもう一度開いてください。</p>
+      <p><a id="open-schedule">配信日和を開く</a></p>
+      <p>GitHub でこの Codespace を開きます。配信日和が自動で開かない場合は、エディターの「ポート」から配信日和を開いてください。</p>
+      <p><a id="open-app">アプリを直接開く</a>（起動済みの場合）</p>
+      <p>再開できない場合は <a href="https://github.com/codespaces">Codespaces 一覧</a>を確認してください。</p>
     </main>
   `;
-  launcher.getElementById("open-schedule").href = appUrl.href;
-
-  const script = launcher.createElement("script");
-  script.textContent = 'window.open(document.getElementById("open-schedule").href, "_blank", "noopener,noreferrer");';
-  launcher.body.append(script);
+  launcher.getElementById("open-schedule").href = `https://${name}.github.dev/`;
+  launcher.getElementById("open-app").href = appUrl.href;
 }
 
-byId("download-launcher").addEventListener("click", () => {
+byId("download-launcher").addEventListener("click", async () => {
   const appUrl = new URL("/", window.location.origin);
+  const codespace = await launcherCodespace(appUrl);
   const launcher = document.implementation.createHTMLDocument("配信日和");
   launcher.documentElement.lang = "ja";
 
@@ -1239,8 +1256,8 @@ byId("download-launcher").addEventListener("click", () => {
   viewport.content = "width=device-width, initial-scale=1";
   launcher.head.append(viewport);
 
-  if (appUrl.hostname.endsWith(".app.github.dev")) {
-    addCodespacesHelp(launcher, appUrl);
+  if (codespace) {
+    addCodespacesHelp(launcher, codespace);
   } else {
     const refresh = launcher.createElement("meta");
     refresh.httpEquiv = "refresh";

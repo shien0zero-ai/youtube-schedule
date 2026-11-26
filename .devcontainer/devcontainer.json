@@ -1,6 +1,9 @@
 {
   "name": "配信日和",
   "image": "mcr.microsoft.com/devcontainers/javascript-node:24-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/sshd:1": {}
+  },
   "postStartCommand": "bash .devcontainer/start-app.sh",
   "forwardPorts": [3000],
   "portsAttributes": {
